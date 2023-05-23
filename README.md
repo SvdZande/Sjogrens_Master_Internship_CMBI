@@ -1,10 +1,10 @@
 # A Multimodal Analysis of B Lymphocytes in Sjögren's Syndrome
 This repository contains the full analysis I performed on multimodal datasets from patients with Sjögrens syndrome for my Masters internship (2023).
-The internship was conducted at the department of Molecular BioSciences (formrly known as the CMBI) at the Radboudumc in Nijmegen, the Netherlands.
+The internship was conducted at the department of Molecular BioSciences (formerly known as the CMBI) at the Radboudumc in Nijmegen, the Netherlands.
 For any questions regarding the repository or its contents, you can mail me at sidney.vanderzande@ru.nl.
 
 ## Docker Image
-For all analyses I used the Bioconductor v.3.16 docker image available at https://hub.docker.com/r/bioconductor/bioconductor_docker. Given that Singularity is installed on your cluster node, it can be installed using the command 
+For all analyses, I used the Bioconductor v.3.16 docker image available at https://hub.docker.com/r/bioconductor/bioconductor_docker. Given that Singularity is installed on your cluster node, it can be installed using the command 
 ```
 singularity pull docker://bioconductor/bioconductor_docker:RELEASE_3_16
 ```
