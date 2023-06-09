@@ -1,0 +1,1275 @@
+
+---
+Title: "Clonotype calling"
+Author: Sidney van der Zande
+Date: 09-06-2023
+---
+
+# Clonotype calling script: B cells
+
+This clonotype calling script groups B cells into clonotypes. B cells belong to the same clonotype if they have the same heavy chain V,D and J segments, the same light chain V and J segments, and if their CDR3 nucleotide sequence does not differ by more than two nucleotides. This does **not** mean that every cell within a clonotype is only two nucleotides apart: a B cell can be two nucleotides removed from one cell and four to another cell, as long as it is a maximum of two nucleotides away from at least cell within the clonotype.
+B cells without a heavy chain, no light chain, or two heavy chains, cannot be compared to cells that do have the required amount of chains. Therefore, these cells are not assigned a clonotype. Cells with two light chains can be assigned to a clonotype: this script picks the light chain of that cell with the highest amount of reads.
+
+The script also takes the donor into account: cells from different donors will not form a shared clonotype. In the case of the paired samples from D004, these share a donor, so these will have shared clonotypes. Since from the pooled PBMC sequencing we do not know which donor each cell belongs to, so this sample is treated as a separate donor to avoid cells from different donors from forming a clnootype.
+
+The main clonotype calling function in this script has also been implemented in the self-designed sjogren package, however, it is included in this script in case you do not have access to that package.
+
+Happy clonotyping!
+
+
+#Preprocessing
+```{r Load libraries}
+#Load required packages
+suppressMessages(library(scran))
+suppressMessages(library(batchelor))
+suppressMessages(library(ggplot2))
+suppressMessages(library(gplots))
+suppressMessages(library(dplyr))
+suppressMessages(library(plotly))
+suppressMessages(library(readr))
+suppressMessages(library(cowplot))
+suppressMessages(library(tibble))
+suppressMessages(library(tidyr))
+suppressMessages(library(readxl))
+suppressMessages(library(ggrepel))
+suppressMessages(library(data.table))
+suppressMessages(library(patchwork))
+suppressMessages(library(ggbreak))
+suppressMessages(library(fastmatch))
+suppressMessages(library(stringi))
+suppressMessages(library(stringr))
+suppressMessages(library(udpipe))
+suppressMessages(library(usefun))
+
+
+#If you have access to the sjogren package:
+suppressMessages(install("sjogren"))
+suppressMessages(library(sjogren))
+```
+
+```{r Load in the data}
+#Load in the contig data and remove the -1 trailing flag from the barcodes
+D001_LN_contigs <- read.csv("/home/sidneyz/sjogren_data/own_data/LN/D001/filtered_feature_matrix/filtered_contig_annotations.csv")
+D001_LN_contigs$barcode <- gsub("-1", "", D001_LN_contigs$barcode)
+
+D002_LN_contigs <- read.csv("/home/sidneyz/sjogren_data/own_data/LN/D002/filtered_feature_matrix/filtered_contig_annotations.csv")
+D002_LN_contigs$barcode <- gsub("-1", "", D002_LN_contigs$barcode)
+
+D003_LN_contigs <- read.csv("/home/sidneyz/sjogren_data/own_data/LN/D003/filtered_feature_matrix/filtered_contig_annotations.csv")
+D003_LN_contigs$barcode <- gsub("-1", "", D003_LN_contigs$barcode)
+
+D004_LN_contigs <- read.csv("/home/sidneyz/sjogren_data/own_data/LN/D004/filtered_feature_matrix/filtered_contig_annotations.csv")
+D004_LN_contigs$barcode <- gsub("-1", "", D004_LN_contigs$barcode)
+
+B005_1_contigs <- read.csv("/home/sidneyz/sjogren_data/charlotte_data/B005-1/BCR/filtered_contig_annotations.csv")
+B005_1_contigs$barcode <- gsub("-1", "", B005_1_contigs$barcode)
+
+B005_2_contigs <- read.csv("/home/sidneyz/sjogren_data/charlotte_data/B005-2/BCR/filtered_contig_annotations.csv")
+B005_2_contigs$barcode <- gsub("-1", "", B005_2_contigs$barcode)
+
+pooled_PBMC_contigs <- read.csv("/home/sidneyz/sjogren_data/own_data/PBMC/filtered_feature_matrix/filtered_contig_annotations.csv")
+pooled_PBMC_contigs$barcode <- gsub("-1", "", pooled_PBMC_contigs$barcode)
+
+D004_PG_contigs <- read.csv("/home/sidneyz/sjogren_data/own_data/PG/D004/filtered_feature_matrix/filtered_contig_annotations.csv")
+D004_PG_contigs$barcode <- gsub("-1", "", D004_PG_contigs$barcode)
+
+B007_1_contigs <- read.csv("/home/sidneyz/sjogren_data/charlotte_data/B007-1/BCR/filtered_contig_annotations.csv")
+B007_1_contigs$barcode <- gsub("-1", "", B007_1_contigs$barcode)
+
+B007_2_contigs <- read.csv("/home/sidneyz/sjogren_data/charlotte_data/B007-2/BCR/filtered_contig_annotations.csv")
+B007_2_contigs$barcode <- gsub("-1", "", B007_2_contigs$barcode)
+
+
+```
+
+
+````{r Set donor and sample names}
+#Set identities (sample names) and donors
+D001_LN_contigs$ident <- "D001"
+D002_LN_contigs$ident <- "D002"
+D003_LN_contigs$ident <- "D003"
+D004_LN_contigs$ident <- "D004LN"
+D004_PG_contigs$ident <- "D004PG"
+D007_PG_contigs$ident <- "D007"
+pooled_PBMC_contigs$ident <- "AIM"
+B005_1_contigs$ident <- "B005_1"
+B005_2_contigs$ident <- "B005_2"
+B007_1_contigs$ident <- "B007_1"
+B007_2_contigs$ident <- "B007_2"
+
+
+D001_LN_contigs$donor <- "D001"
+D002_LN_contigs$donor <- "D002"
+D003_LN_contigs$donor <- "D003"
+D004_LN_contigs$donor <- "D004"
+D004_PG_contigs$donor <- "D004"
+D007_PG_contigs$donor <- "D007"
+pooled_PBMC_contigs$donor <- "AIM"
+B005_1_contigs$donor <- "B005"
+B005_2_contigs$donor <- "B005"
+B007_1_contigs$donor <- "B007"
+B007_2_contigs$donor <- "B007"
+
+```
+
+```{r Combine samples into dataframe}
+#Make combined data frames for D00 and B00 donors, add cell barcodes (sample name+barcode) to prevent duplicate barcodes
+contig <- list(D001_LN_contigs, D002_LN_contigs, D003_LN_contigs, D004_LN_contigs, D004_PG_contigs, D007_PG_contigs, pooled_PBMC_contigs)
+contig <- rbindlist(contig,use.names = TRUE)
+contig$cell_barcode <- paste0(contig$ident, "_", contig$barcode)
+
+contig_0507 <- list(B005_1_contigs,B005_2_contigs,B007_1_contigs,B007_2_contigs)
+contig_0507 <- rbindlist(contig_0507,use.names = TRUE)
+contig_0507$cell_barcode <- paste0(contig_0507$ident, "_", contig_0507$barcode)
+
+```
+
+```{r Filtering: only keep productive chains}
+#Filtering step: only keep productive chains and chains with a CDR3 sequence
+contig_0507 <- contig_0507[contig_0507$cdr3_nt != "None" & contig_0507$productive == "True",]
+```
+
+##The clonotyping function (run if you do not have the sjogren package installed)
+```{r The clonotype calling function}
+#This function clonotypes VDJ contig files based on identical heavy chain VDJ assignments, identical light chain VJ assignments,
+#and a user-defined threhold for the amount of nucleotide mismatches in the CDR3 region.
+#@param contig The VDJ contigs (as a data frame, containing at least a barcode, VDJ assignments, and CDR3 nucleotide sequences).
+#@param threshold The allowed number of mismatches (as an integer) in the CDR3 region between two sequences in a clonotype.
+#@param levenshtein Should the distance be calculated based on the levenshtein distance (allowing indels)? Defaults to FALSE (using point mutation msimatches instead)
+#@keywords clonotyping
+#@returns The original contig file, with clonotype numbers for each cell in the "clonotype_new" column.
+#@export
+#@examples contig <- clonotype(contig, threshold = 2, levenshtein = F)
+
+clonotype <- function(contig, threshold, levenshtein = F){
+
+  #Make sure correct packages are installed
+  stopifnot(require(fastmatch))
+  stopifnot(require(stringi))
+  stopifnot(require(stringr))
+  stopifnot(require(udpipe))
+  stopifnot(require(usefun))
+  stopifnot(require(dplyr))
+
+#Define a faster version of the %in% operator
+  `%fin%` <- function(x, table) {
+    stopifnot(require(fastmatch))
+    fmatch(x, table, nomatch = 0L) > 0L
+  }
+
+  #Require a donor and cell barcode column
+  if (!(all(c("donor", "barcode", "ident") %in% colnames(contig)))){
+    stop("The object should have a column stating the donor and identity (ident), and it should have barcodes.")
+  }
+
+  if (!(c("cell_barcode") %in% colnames(contig))){
+    contig$cell_barcode <- paste0(contig$ident, "_", contig$barcode)
+  }
+
+  #Only keep productive chains (if not filtered yet)
+  contig <- contig[contig$cdr3_nt != "None" & contig$productive == "True",]
+
+
+  #make sure threshold is okay: not larger than the amount of nucleotides in the shortest sequence, not below zero, and has to be a number
+  if (threshold > min(nchar(contig$cdr3_nt)) | threshold < 0 | !is.numeric(threshold)){
+    stop("Please choose an appropriate threshold. This error can occur if the threshold is below 0, more than the minimum CDR3 nucleotide length, or if the threshold is non-numeric.")
+  }
+
+  #Initialisation message
+  print("Initialising...")
+
+  contig <- data.table(contig) #convert to data.table for speed
+  contig_start <- contig #save the starting contig table
+  suppressWarnings(contig$clonotype_new <- NULL) #remove any pre-rexisting clonotype columns
+
+
+  #Subset all IGH chains
+  contig_IGH <- contig[contig$chain == "IGH",]
+  #Remove cells with dual IGH chains
+  dual_chains <- contig_IGH$cell_barcode[duplicated(contig_IGH$cell_barcode)]
+  contig_IGH <- contig_IGH[!(contig_IGH$cell_barcode %fin% dual_chains),]
+
+  print(paste0(length(dual_chains), " cells with two IGH chains were found.")) #print a message saying how many dual IGH cells were found
+
+
+  #Group the cells with the same IGH genes
+  contig_IGH_grouping <- contig_IGH %>%
+    group_by(v_gene, d_gene, j_gene) %>%
+    dplyr::count()
+
+  clonotypes_IGH <- seq(1:nrow(contig_IGH_grouping)) #define IGH clonotypes, which is the amount of unique IGH genes
+
+  contig_IGH_grouping$n <-NULL
+  contig_IGH_grouping$clonotype_IGH <- clonotypes_IGH #add the IGH clonotypes to the genes
+
+  contig <- left_join(contig, contig_IGH_grouping, by = c("v_gene", "d_gene", "j_gene")) #add the IGH clonotypes to the cells based on their IGH genes
+
+
+  #Group cells with the same IGKL chains, same procedure as for IGH
+  contig_IGKL <- contig[contig$chain == "IGK" | contig$chain == "IGL",]
+
+
+  contig_IGKL_grouping <- contig_IGKL %>%
+    group_by(v_gene, j_gene) %>%
+    dplyr::count()
+
+  max_IGH <- max(clonotypes_IGH)+1
+  max_IGKL <- max(clonotypes_IGH) + nrow(contig_IGKL_grouping) #the IGKL clonotype numbering starts where the IGH clonotype numbering left off
+
+  clonotypes_IGKL <- seq(max_IGH, max_IGKL)
+
+  contig_IGKL_grouping$n <-NULL
+  contig_IGKL_grouping$clonotype_IGKL <- clonotypes_IGKL
+
+  contig <- left_join(contig, contig_IGKL_grouping, by = c("v_gene", "j_gene"))
+
+
+  #set the clonotypes of dual IGH chains to "none"
+  contig$clonotype_IGH[contig$cell_barcode %fin% dual_chains] <- "none, dual IGH"
+  contig$clonotype_IGKL[contig$cell_barcode %fin% dual_chains] <- "none, dual IGH"
+
+  #check for dual or missing IGH/IGKL chains
+  check_IG <- contig %>%
+    group_by(cell_barcode, chain) %>%
+    dplyr::count()
+
+  #also set the clonotype of cells that have only one chain (IGH or IGKL) to "none"
+  check_IGH <- check_IG[check_IG$chain == "IGH",]
+  check_IGKL <- check_IG[check_IG$chain == "IGK" | check_IG$chain == "IGL",]
+
+  one_chain <- outersect(check_IGH$cell_barcode, check_IGKL$cell_barcode) #outersect looks for cells that only appear in one of the two data frames
+  contig$clonotype_IGH[contig$cell_barcode %fin% one_chain] <- "none, only one chain"
+  contig$clonotype_IGKL[contig$cell_barcode %fin% one_chain] <- "none, only one chain"
+
+  print(paste0(length(one_chain), " cells with only one chain (IGH or IGK/L) were found."))
+
+  #For dual IGK and IGL chains in one cell, keep the entry with the highest amount of reads
+  contig_IGKL <- contig[contig$chain == "IGK"| contig$chain == "IGL",]
+  contig_IGKL_dup <- contig_IGKL[contig_IGKL$clonotype_IGKL != "none, dual IGH" & contig_IGKL$clonotype_IGKL != "none, only one chain",]
+
+  contig_IGKL_dup <- contig_IGKL_dup[duplicated(contig_IGKL_dup$cell_barcode),] #cells with two IGKL chains will appear twice in the data frame
+  contig_IGKL_dup <- contig_IGKL_dup %>%
+    group_by(cell_barcode) %>% top_n(1, reads) #keep the entry with the highest reads
+
+  if (nrow(contig_IGKL_dup) > 0){
+    contig_IGH_counterparts <- contig[contig$cell_barcode %fin% contig_IGKL_dup$cell_barcode,]
+    contig_IGKL_dup <- rbind(contig_IGKL_dup, contig_IGH_counterparts)
+    contig <- contig[!(contig$cell_barcode %fin% contig_IGKL_dup$cell_barcode),] #replace the dual IGKL entries with the one with the most reads
+    contig <- rbind(contig, contig_IGKL_dup)
+  }
+
+
+  #Group the cells based on their IGKL and IGH chains
+  contig_full_grouping <- contig %>%
+    group_by(cell_barcode, clonotype_IGH, clonotype_IGKL) %>%
+    dplyr::count()
+
+  contig_full_grouping$clonotype_IGH[contig_full_grouping$clonotype_IGH == "none, dual IGH" | contig_full_grouping$clonotype_IGH == "none, only one chain" ] <- "none"
+  contig_full_grouping$clonotype_IGKL[contig_full_grouping$clonotype_IGKL == "none, dual IGH" | contig_full_grouping$clonotype_IGKL == "none, only one chain" ] <- "none"
+
+  #First, remove NA values from the clonotype numbers
+  test <- contig_full_grouping %>%
+    unite(clonotype_prelim, clonotype_IGH, clonotype_IGKL, na.rm = T, sep = ",")
+  test$clonotype_prelim[test$clonotype_prelim == "none,none"] <- "none"
+
+  #Then, make a concatenated preliminary clonotype based on the IGH and IGKL clonotype
+  test2 <- paste.data.frame(test, term = "clonotype_prelim", group = "cell_barcode", collapse = "_")
+
+  contig <- left_join(contig, test2, by = "cell_barcode")
+
+  #Since we are going to cluster based on IGH sequences, only keep IGH sequences
+  cluster_contig <- contig[contig$chain == "IGH" & contig$clonotype_prelim != "none",]
+  cluster_contig$clonotype_new <- NA
+
+  #Split the cells according to their donor
+  group <- split(cluster_contig, list(cluster_contig$donor), drop = TRUE)
+
+  #Split each donor group according to their preliminary clonotypes
+  group <- lapply(X = group, function(x) split(x, x$clonotype_prelim, drop = T))
+
+
+  #Establish the clonotype numbers
+  clonotypes <- c()
+  max_clono <- nrow(cluster_contig) #the maximum amount of clonotypes that can be generated is the number of cells in the object
+
+  normal_nt <- c("A", "T", "G", "C") #establish what normal nucleotides are
+
+  free_clonotypes <- setdiff(seq(1:max_clono), clonotypes) #set the clonotype numbers that are not in use
+
+  print("Running the clonotyping process, hang in there:")
+  progress_bar = txtProgressBar(min=0, max=length(group), style = 1, char="=") #set up the progress bar
+
+  for (g in 1:length(group)){ #run for each donor
+    subgroup <- group[[g]]
+
+    group_start <- contig[contig$donor == names(group)[[g]],] #save the starting contig
+    groups_to_be_checked <- c()
+    setTxtProgressBar(progress_bar, value = g) #add to the progress bar
+
+
+    for (s in 1:length(subgroup)){
+      free_clonotypes <- setdiff(seq(1:max_clono), clonotypes)
+
+
+      if(nrow(subgroup[[s]]) < 2){
+        subgroup[[s]]$clonotype_new <- free_clonotypes[[1]] #if there is only one cell in the IGH/IGKL group, then no clonotyping needs to be done: this cell is unique
+        clonotypes <- c(clonotypes, subgroup[[s]]$clonotype_new) #add the clonotype number to the ones in use
+
+      } else{
+        groups_to_be_checked <- c(groups_to_be_checked, s) #save the groups larger than one cell: these need to be further clonotyped
+
+      }
+    }
+
+    for (s in groups_to_be_checked){ #check every group with more than one entry
+
+      free_clonotypes <- setdiff(seq(1:max_clono), clonotypes)
+
+      investigation_group <- subgroup[[s]] #get the group out
+
+
+      for (x in 1:nrow(investigation_group)){ #for each entry in the data frame
+
+        if(length(unique(investigation_group$clonotype_new)) == 1 && !any(is.na(investigation_group$clonotype_new))){
+          next #if all cells already have the same clonotype, it does not make sense to continue
+
+        }
+
+        string_split <- unlist(strsplit(investigation_group$cdr3_nt[[x]], "", fixed = TRUE)) #make a vector of the individual nucleotides
+
+        for (z in 1:nrow(investigation_group)){ #compare against each other entry in the data frame
+
+          if (x == z){
+            next #do not compare a sequence against itself
+          }
+
+          if(length(unique(investigation_group$clonotype_new)) == 1 && !any(is.na(investigation_group$clonotype_new))){
+            next #if all cells already have the same clonotype, it does not make sense to continue
+
+          }
+
+          other_split <- unlist(strsplit(investigation_group$cdr3_nt[[z]], "", fixed = TRUE)) #make a vector of the individual nucleotides
+
+          min_length <- min(length(string_split), length(other_split)) #the length to be compared over is the length of the smallest string
+
+          score <- 0 #starting score is zero
+
+          if (levenshtein == F){
+            for (n in seq(1:min_length)){ #for each nucleotide, up to the length of the shortest sting
+              if (other_split[n] != string_split[n] && other_split[n] %fin% normal_nt && string_split[n] %fin% normal_nt){ #add 1 to the mutation score if the nucleotides do not match up
+                score = score + 1
+              } else{
+                score = score #do not add to the score if the nucleotides do match up or a non-standard nucleotide was used
+              }
+            }
+
+          } else if (levenshtein == T){
+            score <- adist(investigation_group$cdr3_nt[[x]], investigation_group$cdr3_nt[[z]], ignore.case = F)
+          }
+
+          if (score > threshold){ #if the mutation score exceeds a threshold (more than the threshold number of nucleotide mismatches)
+            next #leave the clonotype as is
+
+          } else{ #if the mutation score is below the threshold
+
+            if(is.na(investigation_group$clonotype_new[[x]]) && is.na(investigation_group$clonotype_new[[z]])){
+              investigation_group$clonotype_new[[x]] <- free_clonotypes[[1]] #if they do match, but the input sequence has no clonotype number, assign the input cell the first unused clonotype number
+              investigation_group$clonotype_new[[z]] <- investigation_group$clonotype_new[[x]] #assign the comparison cell the clonotype number of the input sequence
+
+            } else if (!is.na(investigation_group$clonotype_new[[x]]) && is.na(investigation_group$clonotype_new[[z]])){
+              investigation_group$clonotype_new[[z]] <- investigation_group$clonotype_new[[x]] #if they do match, and the input cell already has a clonotype number, assign the comparison cell the clonotype number of the input sequence
+
+            } else if (is.na(investigation_group$clonotype_new[[x]]) && !is.na(investigation_group$clonotype_new[[z]])){
+              investigation_group$clonotype_new[[x]] <- investigation_group$clonotype_new[[z]] #if they do match, and only the comparison cell has a clonotype number, assign the input cell the clonotype number of the comparison cell
+
+            } else if (!is.na(investigation_group$clonotype_new[[x]]) && !is.na(investigation_group$clonotype_new[[z]]) && investigation_group$clonotype_new[[x]] == investigation_group$clonotype_new[[z]]){ #if both cells already have a clonotype number
+              next #if both sequences already have matching clonotype numbers, do not change anything
+
+            } else if (!is.na(investigation_group$clonotype_new[[x]]) && !is.na(investigation_group$clonotype_new[[z]]) && investigation_group$clonotype_new[[x]] != investigation_group$clonotype_new[[z]]){
+              investigation_group$clonotype_new[investigation_group$clonotype_new == investigation_group$clonotype_new[[z]]] <- investigation_group$clonotype_new[[x]]
+              investigation_group$clonotype_new[[z]] <- investigation_group$clonotype_new[[x]] #if both cells have different clonotype numbers, assign all cells with the clonotype of the comparison cell to the clonotype of the input cell (merge the clonotypes)
+            }
+
+            clonotypes <- c(clonotypes, investigation_group$clonotype_new) #update which clonotype numbers are in use
+            free_clonotypes <- setdiff(seq(1:max_clono), clonotypes)
+
+          } #end of clonotyping
+
+
+
+        } #end of z loop
+
+
+      } #end of x loop
+
+      #Fill in clonotype numbers for all cells that did not get a clonotype number at the end of the clonotyping process
+      investigation_group$clonotype_new[is.na(investigation_group$clonotype_new)] <- free_clonotypes[1:length(investigation_group$clonotype_new[is.na(investigation_group$clonotype_new)])] #give all remaining cells their own clonotype
+      clonotypes <- c(clonotypes, investigation_group$clonotype_new)
+      free_clonotypes <- setdiff(seq(1:max_clono), clonotypes)
+
+      investigation_group <- as.data.table(investigation_group) #convert to data table
+
+      subgroup[[s]] <- investigation_group #update the list with the clonotyped object
+
+
+    } #end of s loop
+    group[[g]]  <- rbindlist(subgroup) #get the clonotyped object per donor in a data table
+
+    group[[g]]$clonotype_new <- as.character(group[[g]]$clonotype_new)
+
+    #double check if the clonotyping went correctly
+    check <- group[[g]] %>%
+      group_by(clonotype_new, v_gene, d_gene, j_gene) %>%
+      count()
+    check$correct <- "yes"
+    check$correct[duplicated(check$clonotype_new)] <- "no" #if a clonotype has two entries, it means that they use different genes and the assignment did not go correctly
+
+    check_wrong <- check[check$correct == "no",]
+
+    wrong_cells <- group[[g]][group[[g]]$clonotype_new %fin% check_wrong$clonotype_new,] #get all cells with the incorrect clonotypes out
+
+    #cells with the same end clonotype, but different prelim clonotypes, need to be split:
+    if (nrow(wrong_cells) > 0){ #if there are any cells wrongly classified
+      for (i in 1:nrow(wrong_cells)){
+        free_clonotypes <- setdiff(seq(1:max_clono), clonotypes)
+        same_clonotype_cells <- wrong_cells[wrong_cells$clonotype_new == wrong_cells$clonotype_new[[i]],] #find cells with the same new clonotype
+        if (length(unique(same_clonotype_cells$clonotype_prelim)) > 1){ #if the cells of the same new clonotype have different prelim clonotypes
+          wrong_cells$clonotype_new[[i]] <- free_clonotypes[[1]] #assign the current row a new clonotype
+          wrong_cells$clonotype_new[wrong_cells$clonotype_prelim == wrong_cells$clonotype_prelim[[i]]] <- wrong_cells$clonotype_new[[i]] #also change the clonotype for the cells that do match perfectly with the prelim of the current row
+          clonotypes <- c(clonotypes, wrong_cells$clonotype_new)
+        }
+      }
+    }
+
+
+
+    #Add any missing heavy chain chain data back in
+    group_missed <- group_start[!(group_start$contig_id %fin% group[[g]]$contig_id),]
+    group_missed$clonotype_new <- NA
+
+
+    if (nrow(group_missed) > 0){
+      group[[g]] <- rbind(group[[g]], group_missed)
+      group[[g]]$clonotype_new[group[[g]]$clonotype_prelim == "none"] <- "none"
+    }
+
+    #fill in the clonotype numbers of the light chain data based on the heavy chain clonotypes
+    group[[g]] <-  group[[g]] %>%
+      group_by(cell_barcode) %>%
+      fill(clonotype_new) %>%
+      fill(clonotype_new, .direction = "up") %>%
+      ungroup() %>%
+      as.data.table()
+
+
+  } #end of g loop
+
+  print("Done clonotyping, wrapping up...")
+
+  #Add the data of all donors back together
+  group_data <- rbindlist(group)
+
+  #Add more useful information to the "none" clonotype
+  group_data$clonotype_new[group_data$clonotype_IGH == "none, dual IGH"] <- "none, dual IGH"
+  group_data$clonotype_new[group_data$clonotype_IGH == "none, only one chain"] <- "none, only one chain"
+
+
+  #Check if the output has the same amount of entries as the input:
+  contig_missed <- contig_start[!(contig_start$contig_id %fin% group_data$contig_id),]
+
+  if (nrow(contig_missed) > 0){ #if some entries were missed, add those back in
+    contig_missed$clonotype_new <- NA
+    contig_missed$clonotype_IGH <- "none, missing from end object"
+    contig_missed$clonotype_IGKL <- "none, missing from end object"
+    contig_missed$clonotype_prelim <- "none, missing from end object"
+
+    group_data <- rbind(group_data, contig_missed)
+  }
+
+  #fill in the clonotype numbers of the missing light chain data based on the heavy chain clonotypes
+  group_data <-  group_data %>%
+    group_by(cell_barcode) %>%
+    fill(clonotype_new) %>%
+    fill(clonotype_new, .direction = "up") %>%
+    ungroup() %>%
+    as.data.table()
+
+  group_data$clonotype_new[group_data$cdr3_nt == ""] <- "none, no CDR3" #assign clonotypes to all entries with no CDR3 data
+
+
+  #Just in case there are NA values left:
+  group_data$clonotype_new[is.na(group_data$clonotype_new)] <- "none, were not assigned clonotype"
+
+
+  group_data$clonotype_IGH <- NULL
+  group_data$clonotype_IGKL <- NULL
+  group_data$clonotype_prelim <- NULL
+
+  group_data <- as.data.frame(group_data)
+
+  #Close the progress bar
+  print("Finished! Returning the object to you now..")
+  close(progress_bar)
+
+  return(group_data)
+}
+
+```
+
+##The clonotype testing function (run if you do not have the sjogren package installed)
+```{r The clonotype result testing function}
+test.result <- function(contig, threshold, levenshtein = F){
+
+  #Set back all "none" clonotype entries
+  contig_none <- contig[grepl("none", contig$clonotype_new),]
+  print("Sequences with no clonotype assignment: ")
+  print(summary(as.factor(contig_none$clonotype_new)))
+
+  contig$clonotype_new[grepl("none", contig$clonotype_new)] <- "none"
+
+
+  #IGH chain check
+  check_IGH <- contig %>%
+    filter(chain == "IGH") %>%
+    filter(clonotype_new != "none") %>%
+    group_by(clonotype_new, v_gene, d_gene, j_gene) %>%
+    dplyr::count()
+
+  dup1 <- check_IGH[duplicated(check_IGH$clonotype_new),] #check if a clonotype has multiple assigned IGH sequences (which should not occur)
+  if (nrow(dup1) > 0){
+    passed_IGH <- F
+  } else{
+    passed_IGH <- T
+  }
+
+  check_IGKL <- contig %>%
+    filter(chain == "IGK" | chain == "IGL") %>%
+    filter(clonotype_new != "none") %>%
+    group_by(clonotype_new, v_gene, j_gene) %>%
+    dplyr::count()
+
+  dup2 <- check_IGKL[duplicated(check_IGKL$clonotype_new),]
+  #does not have to be zero due to double IGKL
+  print(paste0(nrow(dup2), " clonotypes with more than one possible IGKL chain were found."))
+
+  check_CDR3 <- contig %>%
+    filter(chain == "IGH") %>%
+    filter(clonotype_new != "none") %>%
+    group_by(clonotype_new, v_gene, d_gene, j_gene, cdr3_nt) %>%
+    dplyr::count()
+
+  differing_cdr3 <- check_CDR3[duplicated(check_CDR3$clonotype_new),]
+  differing_cdr3 <- check_CDR3[check_CDR3$clonotype_new %fin% differing_cdr3$clonotype_new,]
+
+  #Make a function that checks whether each cell in a clonotype has a maximum of 2 nt distance to a CDR3 sequence in the same clonotype
+  check_distances <- function(differing_cdr3, threshold, levenshtein){
+    results_data <- data.frame(matrix(ncol = 1, nrow = length(unique(differing_cdr3$clonotype_new))))
+    colnames(results_data) <- "cleared?"
+    rownames(results_data) <- unique(differing_cdr3$clonotype_new)
+
+    for (i in unique(differing_cdr3$clonotype_new)){
+      group <- differing_cdr3[differing_cdr3$clonotype_new == i,]
+      if (nrow(group) == 2){
+        if (levenshtein == T){
+          distance <- adist(group$cdr3_nt[[1]],  group$cdr3_nt[[2]], ignore.case = F)
+        } else{
+          distance <- adist(group$cdr3_nt[[1]], group$cdr3_nt[[2]], costs = c(ins = 100, del = 100, sub = 1)) #costs of indels are set to 100 to prevent these from happening
+
+        }
+        if (distance > threshold){
+          results_data[i,] <- "no"
+        } else{
+          results_data[i,] <- "yes"
+
+        }
+      }
+
+      if (nrow(group) > 2){
+        distances <- c()
+        group_result <- c()
+        for (x in 1:nrow(group)){
+          for (z in 1:nrow(group)){
+            if (x==z){
+              next
+            }
+            if (levenshtein == T){
+              distance <- adist(group$cdr3_nt[[x]],  group$cdr3_nt[[z]], ignore.case = F)
+            } else{
+              distance <- adist(group$cdr3_nt[[x]], group$cdr3_nt[[z]], costs = c(ins = 100, del = 100, sub = 1)) #costs of indels are set to 100 to prevent these from happening
+
+            }
+            distances <- c(distances, distance)
+
+          }
+
+
+          if (any(distances <= threshold)){ #if a group member has a distance below the threshold to any other rmember, it passes checks
+            group_result[[i]] <- "yes"
+          } else{
+            group_result[[i]] <- "no"
+
+          }
+
+        }
+
+        if (any(group_result == "no")){
+          results_data[i,] <- "no"
+
+        } else{
+          results_data[i,] <- "yes"
+
+        }
+
+      }
+    }
+    return(results_data)
+  }
+
+  check_CDR3.res <- check_distances(differing_cdr3, threshold = threshold, levenshtein = levenshtein)
+  failed.checks <- rownames(check_CDR3.res)[which(check_CDR3.res == "no")] #these need to be zero
+
+  failed.checks <- check_CDR3[check_CDR3$clonotype_new %fin% failed.checks,]
+  if (nrow(failed.checks) > 0){
+    passed_CDR3 <- F
+  } else{
+    passed_CDR3 <- T
+  }
+
+
+  if (passed_IGH == F && passed_CDR3 == F){
+    print("Result: object did not meet IGH and CDR3 criteria.")
+  } else if (passed_IGH == F && passed_CDR3 == T){
+    print("Result: object did not meet IGH criteria.")
+
+  } else if (passed_IGH == T && passed_CDR3 == F){
+    print("Result: object did not meet CDR3 criteria. Did you check if you entered the correct threshold?")
+
+  } else if (passed_IGH == T && passed_CDR3 == T){
+    print("Result: object passed all tests.")
+
+  }
+
+  return(contig)
+
+}
+
+```
+
+##Clonotyping with test and real data
+```{r Run with a small test set}
+#a run with a dataset that I know contains doublets and larger clonotypes
+contig_test_5000 <- contig_0507[1:5000,]
+contig_test_5000 <- sjogren::clonotype(contig_test_5000, threshold = 2, levenshtein = F)
+
+#Check the result
+contig_test_5000 <- sjogren::test.result(contig_test_5000, threshold = 2, levenshtein = F) #this function checks whether cells in the same clonotype really do have the same IGH, IG/L chains and a maximum of 2 nt difference.
+```
+
+
+##FULL RUN D001, D002, D003, D004, D007
+```{r Full run with data from D00* donors}
+#Full run with data from D00* donors, testing out multiple thresholds
+contig.copy <- contig_full #make a backup
+
+#Threshold of 2 nucleotides
+contig <- sjogren::clonotype(contig, threshold = 2, levenshtein = F)
+write.csv(contig, "sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405.csv")
+
+
+contig <- contig.copy #reset to original contig data frame
+
+#Threshold of 3 nucleotides
+contig <- sjogren::clonotype(contig, threshold = 3, levenshtein = F)
+write.csv(contig, "sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold3_0405.csv")
+
+
+contig <- contig.copy #reset to original contig data frame
+
+
+#Threshold of 4 nucleotides
+contig <- sjogren::clonotype(contig, threshold = 4, levenshtein = F)
+write.csv(contig, "sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold4_0405.csv")
+
+```
+
+##FULL RUN, B005 AND B007
+```{r Full run with data from B00* donors}
+#Full run with data from B00* donors, testing out multiple thresholds
+
+contig <- contig_0507 #make a backup
+
+#Threshold of 2 nt
+contig_0507 <- sjogren::clonotype(contig_0507, threshold = 2, levenshtein = F)
+write.csv(contig_0507, "sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405.csv")
+
+
+contig_0507 <- contig #reset back to original df
+
+#Threshold 3
+contig_0507 <- sjogren::clonotype(contig_0507, threshold = 3, levenshtein = F)
+write.csv(contig_0507, "sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold3_0405.csv")
+
+contig_0507 <- contig
+
+#Threshold 4
+contig_0507 <- sjogren::clonotype(contig_0507, threshold = 4, levenshtein = F)
+write.csv(contig_0507, "sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold4_0405.csv")
+
+```
+
+##Plotting the results
+```{r Plot the amount of clonotypes per threshold}
+#Check for the amount of clonotypes per threshold:
+contig_full_02 <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405.csv")
+contig_full_03 <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold3_0405.csv")
+contig_full_04 <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold4_0405.csv")
+
+contig_b0057_02 <-  read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405.csv")
+contig_b0057_03 <-  read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold3_0405.csv")
+contig_b0057_04 <-  read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold4_0405.csv")
+
+
+
+clonotype_numbers <- data.frame(donor_data_frame = c("D00", "D00", "D00", "B00", "B00", "B00"), threshold = c(2,3,4), clonotype_number = c(length(unique(contig_full_02$clonotype_new)), length(unique(contig_full_03$clonotype_new)), length(unique(contig_full_04$clonotype_new)), length(unique(contig_b0057_02$clonotype_new)), length(unique(contig_b0057_03$clonotype_new)), length(unique(contig_b0057_04$clonotype_new))))
+
+
+ggplot(clonotype_numbers, aes(x = threshold, y = clonotype_number, fill = threshold)) + geom_col(position = "dodge") +
+  facet_grid(~donor_data_frame) + ggbreak::scale_y_break(c(100,4000)) + geom_text(aes(label=clonotype_number), position=position_dodge(width=0.9), vjust=-0.25)
+```
+
+##Check if the results are correct
+```{r Test if results are correct}
+contig_full_02 <- test.result(contig_full_02, threshold = 2)
+contig_full_03 <- test.result(contig_full_03, threshold = 3)
+contig_full_04 <- test.result(contig_full_04, threshold = 4)
+
+contig_b0057_02 <- test.result(contig_b0057_02, threshold = 2)
+contig_b0057_03 <- test.result(contig_b0057_03, threshold = 3)
+contig_b0057_04 <- test.result(contig_b0057_04, threshold = 4)
+
+```
+
+##Pick a dataframe to work with
+```{r Pick your favorite threshold}
+#Pick a threshold to continue with. In my case, I chose a threshold of 2 nt.
+
+#D00*
+contig_full <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405.csv")
+contig_full$clonotype_new <- as.character(contig_full$clonotype_new)
+contig_full$X <- NULL
+
+#B00*
+contig_0507 <- read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405.csv")
+contig_0507$clonotype_new <- as.character(contig_0507$clonotype_new)
+contig_0507$X <- NULL
+
+```
+
+##Determining autoreactivity
+Autoreactivity is determined based on CDR3 amino acid sequences that have been found to precipitate with autoantigens in these donors. If a cell's heavy chain CDR3 sequence matches that of an autoreacive sequence, it is annotated as autoreactive. It would not make sense if only one cell of a lineage was autoreactive (as they all are directed against the same antigen), so if a cell is annotated as autoreactive, the entire clonotype is annotated as autoreactive.
+This assignment is donor-specific: an autoreactive sequence from one donor is only tested against cells of the same donor (and the pooled PBMC cells, as these can come from any donor).
+
+I use the assign_autoreactivity function of my sjogren package to assign autoreactivities, but the function is specified below just in case.
+
+```{r Autoreactivity assignment function}
+#Only run if you do not have the sjogren package
+assign_autoreactivity <- function(contig, sequences){
+
+  if(all(c("reactivity", "antigen") %fin% colnames(contig))){
+    print("Warning: overriding previous reactivity and antigen assignments")
+  }
+
+  contig$reactivity <- NA
+  contig$antigen <- NA
+  antigen_vector <- c()
+
+
+  if(!(all(c("cdr3", "donor", "reactivity") %in% colnames(sequences)))){
+    stop("Please add columns in the sequences input stating the cdr3, donor and reactivity, and name them accordingly.")
+  }
+
+
+
+  for (i in 1:nrow(sequences)){
+    for (j in 1:nrow(contig)){
+      if (sequences$cdr3[[i]] == contig$cdr3[[j]] && (sequences$donor[[i]] == contig$donor[[j]] | contig$donor[[j]] == "AIM")
+          && contig$clonotype_new[[j]] != "none" && contig$clonotype_new[[j]] != "none, dual IGH" && contig$clonotype_new[[j]] != "none, only one chain"){ #if the donor and autoreactive sequence match, or the donor is AIM
+        if (is.na(contig$reactivity[[j]])){
+          contig$reactivity[[j]] <- sequences$reactivity[[i]] #mark the cell as autoreactive if it matches the sequence
+        } else if (!grepl(sequences$reactivity[[i]], contig$reactivity[[j]])){
+          contig$reactivity[[j]] <- paste0(contig$reactivity[[j]], "," ,sequences$reactivity[[i]]) #if the cell already had a reactivity, but not the one being tested against, add the new reactivity
+        } else{
+          next #if the cell already has that reactivity, skip
+        }
+        contig$reactivity[contig$clonotype_new == contig$clonotype[[j]]] <- contig$reactivity[[j]] #assign cells with the same clonotype the same reactivity
+      } else{
+        next
+      }
+    }
+  }
+
+  #now, assign the antigenicity:
+  for (i in 1:nrow(contig)){
+    row <- contig[i,]
+    antigen <- NA
+    if (grepl("-RF", row$reactivity, fixed = TRUE)){
+      antigen <- "RF"
+    }
+
+    if (grepl("-Ro60", row$reactivity, fixed = TRUE)){
+      if (is.na(antigen)){
+        antigen <- "Ro60"
+
+      } else{
+        antigen <- paste0(antigen, ",", "Ro60")
+      }
+    }
+
+    if (grepl("-Ro52", row$reactivity, fixed = TRUE)){
+      if (is.na(antigen)){
+        antigen <- "Ro52"
+
+      } else{
+        antigen <- paste0(antigen, ",", "Ro52")
+      }
+    }
+
+    if (grepl("-La", row$reactivity, fixed = TRUE)){
+      if (is.na(antigen)){
+        antigen <- "La"
+
+      } else{
+        antigen <- paste0(antigen, ",", "La")
+      }
+    }
+
+    antigen_vector[i] <- antigen
+  }
+
+  contig$antigen <- antigen_vector
+
+
+  return(contig)
+}
+
+
+```
+
+```{r Import D00* autoreactive sequences}
+#Import the autoreactive sequences for D00 donors
+sequences <- as.data.frame(read_xlsx( "/home/sidneyz/sjogren_data/own_data/Autoreactive_clones.new.xlsx"), sheet= "all")
+
+#Remove the YY prefix in the sequences
+sequences$sequence <- gsub("^YY", "", sequences$sequence)
+
+#Remove tails of sequences: these are shared and do not appear in the contig data
+sequences$sequence <- gsub("GQGTLVTVSSGSASAPTLF|GQGTLVTVSSGSASAPTFL|GQGTLSSASTK|GQGTLVTVSSASTK|GQGTTVTVSSASTK|GRGTLVTVSSASTK|GRGTLVTVSSGSASAPTLF", "", sequences$sequence)
+
+colnames(sequences) <- c("cdr3", "reactivity", "donor", "antigen")
+```
+
+```{r Import B00* autoreactive sequences}
+#add in reactivities for B005
+sequences_5 <- as.data.frame(read_xlsx( "/home/sidneyz/sjogren_data/charlotte_data/B005_autoreactive_sequences.xlsx"), sheet= "all")
+
+#Remove the YY prefix in the sequences
+sequences_5$Sequence <- gsub("^YY", "", sequences_5$Sequence)
+
+#Remove tails of sequences: these are shared and do not appear in the contig data
+sequences_5$Sequence <- gsub("GQGTLVTVSSGSASAPTLF|VSSGSASAPTL|VSSASTK|GQGSLVTVSSASTK|GQGTLSSASTK|GQGTLVTVSSASTK|GQGTPVTGKL|GQGTRVT|GQGALVT|
+                             GQGTTVTVSSASTK|GRGTLVTVSSASTK|GRGTLVTVSSGSASAPTLF|GQGTLVT|GQGTVVT|DQGTLVT|GQGTTVT|GQGTMVT|GQGTQVT|GRGTPVT|GRGSLVT|GRGSLVT|GQGTAVT", "", sequences_5$Sequence)
+colnames(sequences_5) <- c("cdr3", "antigen", "donor", "gene","year", "reactivity", "section")
+
+#For each reactivity, remove duplicate CDR3 sequences such that each sequence only appears one
+sequences_5 <- sequences_5 %>%
+  group_by(reactivity) %>%
+  filter(!duplicated(cdr3))
+
+#Repeat these steps for B007
+sequences_7 <- as.data.frame(read_xlsx( "/home/sidneyz/sjogren_data/charlotte_data/B007_autoreactive_sequences.xlsx"), sheet= "all")
+sequences_7$Sequence <- gsub("^YY", "", sequences_7$Sequence)
+sequences_7$Sequence <- gsub("GQGTLVTVSSGSASAPTLF|VSSGSASAPTL|VSSASTK|GQGSLVTVSSASTK|GQGTLSSASTK|GQGTLVTVSSASTK|GQGTTVTVSSASTK|
+                              GQGTPVTGKL|GQGTRVT|GQGALVT|GQGSLVT|GPGTLVT|GRGTLVT|GQGTKVT|GRGTTVT|GQGTPVT|GQGAMVT|VSSASPTSPKVF|GQGAMVTVSSGK|VSSGK|SQGTTVT|
+                             GRGTLVTVSSASTK|GRGTLVTVSSGSASAPTLF|GQGTLVT|GQGTVVT|DQGTLVT|GQGTTVT|GQGTMVT|GQGTQVT|GRGTPVT|GRGSLVT|GRGSLVT|GQGTAVT", "",
+                             sequences_7$Sequence)
+colnames(sequences_7) <- c("cdr3", "antigen", "donor", "gene","year", "reactivity", "section")
+
+sequences_7 <- sequences_7 %>%
+  group_by(reactivity) %>%
+  filter(!duplicated(cdr3))
+
+#Add the sequences together in a larger df
+sequences_0507 <- rbind(sequences_5, sequences_7)
+sequences_0507 <- as.data.frame(ungroup(sequences_0507))
+```
+
+```{r Assign autoreactivities}
+#Assigning autoreactivities
+contig_full <- assign_autoreactivity(contig_full, sequences)
+contig_0507 <- assign_autoreactivity(contig_0507, sequences_0507)
+
+write.csv(contig_full, "sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405_annotated.csv")
+write.csv(contig_0507, "sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405_annotated.csv")
+
+contig_full <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405_annotated.csv")
+contig_0507 <- read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405_annotated.csv")
+```
+
+```{r Plot counts of autoreactive cells}
+#Plot counts of autoreactive cells per donor
+
+#D00*
+contig_full_summary <- contig_full %>%
+  group_by(donor, antigen, reactivity) %>%
+  filter(clonotype_new != "none") %>%
+  filter(!is.na(antigen)) %>%
+  dplyr::count()
+
+ggplot(contig_full_summary, aes(x=donor, y = n, fill = factor(antigen, levels = c("RF", "La", "Ro52", "Ro60", "Ro52,La", "Ro60,La")))) +
+  geom_bar(aes(colour = reactivity), stat = "identity", colour = "black", linewidth = 0.15) + theme_bw() +  theme(panel.grid.major.x = element_blank(),panel.border = element_blank(),  axis.line = element_line(colour = "black")) +
+  xlab("Donor") + ylab("Count") + scale_y_continuous(expand=c(0,0)) + ggtitle("Number of autoreactive clones in each donor") + guides(fill=guide_legend(title="antigenicity"))
+
+#B00*
+contig_0507_summary <- contig_0507 %>%
+  group_by(donor, antigen, reactivity) %>%
+  filter(clonotype_new != "none") %>%
+  filter(!is.na(antigen)) %>%
+  dplyr::count()
+
+
+ggplot(contig_0507_summary, aes(x=donor, y = n, fill = factor(antigen, levels = c("RF", "La", "Ro52", "Ro60", "Ro60,Ro52", "Ro52,La", "Ro60,La", "RF,Ro60", "RF,Ro60,La", "RF,Ro60,Ro52,La")))) +
+  geom_bar(aes(colour = reactivity), stat = "identity", colour = "black", linewidth = 0.15) + theme_bw() +  theme(panel.grid.major.x = element_blank(),panel.border = element_blank(),  axis.line = element_line(colour = "black")) +
+  xlab("Donor") + ylab("Count") + scale_y_continuous(expand=c(0,0), limits = c(0,1500)) + ggtitle("Number of autoreactive clones in each donor") + guides(fill=guide_legend(title="antigenicity"))
+
+#All donors
+contig_all_summary <- rbind(contig_full_summary, contig_0507_summary)
+
+ggplot(contig_all_summary, aes(x=donor, y = n, fill = factor(antigen, levels = c("RF", "La", "Ro52", "Ro60", "Ro60,Ro52", "Ro52,La", "Ro60,La", "RF,Ro60", "RF,Ro60,La", "RF,Ro60,Ro52,La")))) +
+  geom_bar(aes(colour = reactivity), stat = "identity", colour = "black", linewidth = 0.15) + theme_bw() +  theme(panel.grid.major.x = element_blank(),panel.border = element_blank(),  axis.line = element_line(colour = "black")) +
+  xlab("Donor") + ylab("Count") + scale_y_continuous(expand=c(0,0), limits = c(0,1500)) + ggtitle("Number of autoreactive clones in each donor") + guides(fill=guide_legend(title="antigenicity"))
+
+```
+
+##Format result
+```{r Combine the two data frames}
+#combine the two data frames
+#First, set the clonotype numbers of B005 and B007 to not occur in the D00 data frame (non-overlapping clonotype numbers)
+max_D00 <- max(as.integer(contig_full$clonotype_new[contig_full$clonotype_new != "none"]))
+contig_0507$clonotype_new[contig_0507$clonotype_new != "none"] <- as.character(as.integer(contig_0507$clonotype_new[contig_0507$clonotype_new != "none"]) + max_D00)
+
+colnames(contig_full)[!(colnames(contig_full) %in% colnames(contig_0507))]
+contig_all <- rbindlist(list(contig_full, contig_0507), fill = TRUE)
+write.csv(contig_all, "sjogren_results/own_data/combined/alldonors_mathijs_threshold2_0405_annotated.csv")
+```
+
+```{r Seurat metadata}
+#Make Seurat metadata, containing the cell barcode, clonotype, reactivity and antigen
+contig_seurat <- contig_all[,c("cell_barcode", "clonotype_new", "reactivity", "antigen")]
+contig_seurat <- as.data.frame(contig_seurat)
+contig_seurat$clonotype_new[contig_seurat$clonotype_new == "none"] <- NA #if the clonotype cannot be assigned, set to NA
+
+contig_seurat <- contig_seurat[!duplicated(contig_seurat$cell_barcode),] #remove duplicate entries per cell
+
+#check if all cells are in there:
+length(unique(contig_full$cell_barcode)) + length(unique(contig_0507$cell_barcode)) == nrow(contig_seurat)
+
+#change the naming of the B005 and B007 cells  to match those in the seurat object
+contig_seurat$cell_barcode <- gsub("^B005_", "B005-", contig_seurat$cell_barcode)
+contig_seurat$cell_barcode <- gsub("^B007_", "B007-", contig_seurat$cell_barcode)
+
+write.csv(contig_seurat, "sjogren_results/own_data/combined/alldonors_mathijs_threshold2_0405_annotated_seuratmeta.csv")
+```
+
+
+
+##Comparison to Mathijs
+This section is a bit of a mess, but it is meant to compare my assignment of autoreactive cells to those Mathijs found.
+Beware: this comparison depends on reactivity names, and mine and Mathijs's are not entirely equal, so this will only give you a rough indication.
+
+```{r Compare to Mathijs}
+#check if same cells as Mathijs found
+
+#Read in his assignments
+auto_B005_B007 <- as.data.frame(read_xlsx( "/home/sidneyz/sjogren_data/charlotte_data/Autoreactive_barcodes_clonesRMT_MB.xlsx"), sheet= "all")
+
+#Grab my data for B005 and B007
+seurat_metaB00 <- contig_seurat[grepl("B005|B007", contig_seurat$cell_barcode),]
+seurat_metaB00 <- seurat_metaB00[!is.na(seurat_metaB00$antigen),]
+
+seurat_metaB00 <- separate_rows(seurat_metaB00, reactivity, sep = ",") #if a cell has multiple reactivities, assign it to both separate reactivities
+
+search <- split(seurat_metaB00$cell_barcode, seurat_metaB00$reactivity) #make each reactivity into its own list element, containing all its barcodes
+
+x3 <- purrr::map_dfr(search, ~as_data_frame(t(.))) #make a dataframe out of the list
+x4 <- as_data_frame(t(x3)) #transposion
+colnames(x4) <- names(search) #set the colnames to be the reactivities
+
+#change some of the colnames from Mathijs's annotation due to them being wrong
+auto_B005_B007$`CARGAG-anti-Ro60` <- auto_B005_B007$CARGAG
+auto_B005_B007$`CARGAG-anti-La` <- auto_B005_B007$CARGAG
+auto_B005_B007$`CARGAG-anti-RF` <- auto_B005_B007$CARGAG
+auto_B005_B007$CARGAG <- NULL
+
+auto_B005_B007$`CARGMI-anti-Ro60` <- auto_B005_B007$CARGMI
+auto_B005_B007$CARGMI <- NULL
+
+auto_B005_B007$`CTRLLG-anti-La` <- auto_B005_B007$CTRLLG
+auto_B005_B007$`CTRLLG-anti-Ro60` <- auto_B005_B007$CTRLLG
+auto_B005_B007$`CTRLLG-anti-RF` <- auto_B005_B007$CTRLLG
+auto_B005_B007$CTRLLG <- NULL
+
+auto_B005_B007$`CARDSL-anti-La` <- auto_B005_B007$`CARDSLR-anti-La`
+auto_B005_B007$`CARDSL-anti-Ro60` <- NA
+new <- unique(c(auto_B005_B007$`CARDSLR-anti-Ro60`, auto_B005_B007$`CARDSLV-anti-Ro60`))
+auto_B005_B007$`CARDSL-anti-Ro60`[1:length(new)] <- new  
+
+
+#Compare the barcodes in each reactivity between me and Mathijs (Mathijs as the reference)
+check_occurrence <- function(clones, counts){
+  list.2 <- list()
+  
+  for (i in 1:ncol(clones)){ #for each reactivity that was found
+    counts_column <- counts[,grep(colnames(clones)[[i]], colnames(counts), ignore.case = T)] #take the reactivity columns that match
+    counts_column <- counts_column[!is.na(counts_column)]
+    clones_column <- unlist(as.vector(clones[,i]))
+    clones_column <- clones_column[!is.na(clones_column)]
+    
+    howmuch <- length(intersect(counts_column, clones_column)) #check if you can find the barcodes that Mathijs annotated in the object
+    data <- data.frame(clones_found = howmuch, clones_total =length(clones_column)) #also stores how many cells you should have found
+    list.2[[length(list.2)+1]] <- data
+    names(list.2)[[length(list.2)]] <- colnames(clones)[[i]]
+  }
+  check <- rbindlist(list.2, use.names = TRUE) #get the result out of the list
+  check <- as.data.frame(check)
+  rownames(check) <- colnames(clones)
+  return(check)
+}
+
+check <- check_occurrence(clones = auto_B005_B007, counts = x4)
+sum(check$clones_found)/sum(check$clones_total) #64.5% of Mathijs's autoreactive cells were also found by me 
+
+
+#The entries where zero clones were found are a bit odd, since you should at least expect cells with an exact matching CDR3 to be identified.
+#Why did this happen?
+zero <- check[check$clones_found == 0,]
+zero$reactivity <- rownames(zero)
+zero <- left_join(zero, sequences_0507, by = "reactivity") #manual inspection here
+
+#other way around: how many of my autoreactive cells did Mathijs also find?
+check_occurrence_2 <- function(clones, counts){
+  list.2 <- list()
+  for (i in 1:ncol(counts)){ #for each reactivity that was found
+    clones_column <- clones[,grep(colnames(counts)[[i]], colnames(clones), ignore.case = T)]
+    clones_column <- clones_column[!is.na(clones_column)]
+    counts_column <- unlist(as.vector(counts[,i]))
+    counts_column <- counts_column[!is.na(counts_column)]
+    
+    howmuch <- length(intersect(counts_column, clones_column)) #check if you can find the barcodes that Mathijs annotated in the object
+    data <- data.frame(clones_found = howmuch, clones_total = length(counts_column)) #also stores how many cells you should have found
+    list.2[[length(list.2)+1]] <- data
+    names(list.2)[[length(list.2)]] <- colnames(counts)[[i]]
+  }
+  check <- rbindlist(list.2, use.names = TRUE) #get the result out of the list
+  check <- as.data.frame(check)
+  rownames(check) <- colnames(counts)
+  
+  
+  return(check)
+}
+
+check.2 <- check_occurrence_2(clones = auto_B005_B007, counts = x4)
+sum(check.2$clones_found)/sum(check.2$clones_total) #49.7% of my cells were found in Mathijs's object 
+
+```
+
+##Compare thresholds
+Higher thresholds give larger clonotypes, and therefore more autoreactive sequences. Which cells does this affect?
+```{Compare thresholds}
+#Check the amount of autoreactive cells per threshold
+
+#Remove cells that were not assigned a clonotype
+contig_full_02$clonotype_new[grepl("none", contig_full_02$clonotype_new)] <- "none"
+contig_full_03$clonotype_new[grepl("none", contig_full_03$clonotype_new)] <- "none"
+contig_full_04$clonotype_new[grepl("none", contig_full_04$clonotype_new)] <- "none"
+
+contig_b0057_02$clonotype_new[grepl("none", contig_b0057_02$clonotype_new)] <- "none"
+contig_b0057_03$clonotype_new[grepl("none", contig_b0057_03$clonotype_new)] <- "none"
+contig_b0057_04$clonotype_new[grepl("none", contig_b0057_04$clonotype_new)] <- "none"
+
+D00list <- list(contig_full_02, contig_full_03, contig_full_04)
+B00list <- list(contig_b0057_02, contig_b0057_03, contig_b0057_04)
+
+#Define the autoreactive cells for each threshold
+for (i in seq_along(D00list)){
+  name <- names(D00list)[[i]]
+  D00list[[i]] <- assign_autoreactivity(D00list[[i]], sequences)
+  names(D00list)[[i]] <- name
+}
+
+for (i in seq_along(B00list)){
+  name <- names(B00list)[[i]]
+  B00list[[i]] <- assign_autoreactivity(B00list[[i]], sequences_0507)
+  names(B00list)[[i]] <- name
+}
+
+contig_full_02 <- D00list[[1]]
+contig_full_03 <- D00list[[2]]
+contig_full_04 <- D00list[[3]]
+
+contig_b0057_02 <- B00list[[1]]
+contig_b0057_03 <- B00list[[2]]
+contig_b0057_04 <- B00list[[3]]
+
+write.csv(contig_full_03, "sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold3_0405_annotated.csv")
+write.csv(contig_full_04, "sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold4_0405_annotated.csv")
+
+write.csv(contig_b0057_03, "sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold3_0405_annotated.csv")
+write.csv(contig_b0057_04, "sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold4_0405_annotated.csv")
+
+
+contig_full_02 <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405_annotated.csv")
+contig_full_03 <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold3_0405_annotated.csv")
+contig_full_04 <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold4_0405_annotated.csv")
+
+contig_b0057_02 <- read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405_annotated.csv")
+contig_b0057_03 <- read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold3_0405_annotated.csv")
+contig_b0057_04 <- read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold4_0405_annotated.csv")
+
+#Count the amount of autoreactive sequences per threshold
+n_autoreactive_full02 <- contig_full_02[!duplicated(contig_full_02$cell_barcode),]
+n_autoreactive_full03 <- contig_full_03[!duplicated(contig_full_03$cell_barcode),]
+n_autoreactive_full04 <- contig_full_04[!duplicated(contig_full_04$cell_barcode),]
+n_autoreactive_b02 <- contig_b0057_02[!duplicated(contig_b0057_02$cell_barcode),]
+n_autoreactive_b03 <- contig_b0057_03[!duplicated(contig_b0057_03$cell_barcode),]
+n_autoreactive_b04 <- contig_b0057_04[!duplicated(contig_b0057_04$cell_barcode),]
+
+#Make a df for plotting
+clonotype_numbers <- data.frame(donor_data_frame = c("D00", "D00", "D00", "B00", "B00", "B00"), threshold = c(2,3,4,2,3,4),
+                                clonotype_number = c(length(unique(contig_full_02$clonotype_new)),
+                                                     length(unique(contig_full_03$clonotype_new)),
+                                                     length(unique(contig_full_04$clonotype_new)),
+                                                     length(unique(contig_b0057_02$clonotype_new)),
+                                                     length(unique(contig_b0057_03$clonotype_new)), 
+                                                     length(unique(contig_b0057_04$clonotype_new))), 
+                                n_autoreactive = c(length(n_autoreactive_full02$antigen[!is.na(n_autoreactive_full02$antigen)]), length(n_autoreactive_full03$antigen[!is.na(n_autoreactive_full03$antigen)]),
+                                                   length(n_autoreactive_full04$antigen[!is.na(n_autoreactive_full04$antigen)]), length(n_autoreactive_b02$antigen[!is.na(n_autoreactive_b02$antigen)]),
+                                                   length(n_autoreactive_b03$antigen[!is.na(n_autoreactive_b03$antigen)]), length(n_autoreactive_b04$antigen[!is.na(n_autoreactive_b04$antigen)])
+                                                   ))
+
+clonotype_numbers$threshold <- as.factor(clonotype_numbers$threshold)
+
+#Plot the amount of clonotypes per threshold
+plot_clono <- ggplot(clonotype_numbers, aes(x = threshold, y = clonotype_number, fill = threshold)) + geom_col(position = "dodge") +
+  facet_grid(~donor_data_frame) + ggtitle("Number of clonotypes per threshold") + ylab("number of clonotypes") +
+   geom_text(aes(label=clonotype_number), position=position_dodge(width=0.9), vjust=-0.25) + ggbreak::scale_y_break(c(100,4000))
+
+#Plot the amount of autoreactive cells per threshold
+plot_auto <- ggplot(clonotype_numbers, aes(x=threshold, y = n_autoreactive, fill = threshold)) + geom_col(position = "dodge") +
+  facet_grid(~donor_data_frame) +  ggtitle("Number of autoreactive cells per threshold") + ylab("number of autoreactive cells") +
+  geom_text(aes(label=n_autoreactive), position=position_dodge(width=0.9), vjust=-0.25)
+
+#Plot both side-by-side
+plot_grid(plot_clono, plot_auto, nrow = 2)
+
+#check where the increase in autoreactive cells comes from
+autoreactive_grouping_02 <- n_autoreactive_b02 %>%
+  group_by(antigen) %>%
+  filter(!is.na(antigen)) %>%
+  dplyr::count() %>%
+  mutate(threshold = 2)
+
+autoreactive_grouping_03 <- n_autoreactive_b03 %>%
+  group_by(antigen) %>%
+  filter(!is.na(antigen)) %>%
+  dplyr::count() %>%
+  mutate(threshold = 3)
+
+autoreactive_grouping_04 <- n_autoreactive_b04 %>%
+  group_by(antigen) %>%
+  filter(!is.na(antigen)) %>%
+  dplyr::count() %>%
+  mutate(threshold = 4)
+
+autoreactive_grouping <- rbind(autoreactive_grouping_02, autoreactive_grouping_03, autoreactive_grouping_04)
+autoreactive_grouping <- ungroup(autoreactive_grouping)
+
+#Plot the amount of autoreactive cells per threshold, per antigen
+ggplot(autoreactive_grouping, aes(x=threshold, y = n, fill = factor(antigen, levels = c("RF", "La", "Ro60", "Ro52", "Ro60,Ro52", "Ro60,La", "Ro52,La", "RF,Ro60", "RF,Ro60,La", "RF,Ro60,Ro52,La")))) +
+  geom_col(position = "dodge") + ggtitle("Number of autoreactive cells per antigenicity (B005 and B007)") + ylab("number of cells") +
+  geom_text(aes(label= n), position=position_dodge(width=0.9), vjust=-0.25) + guides(fill=guide_legend(title="antigenicity")) + scale_fill_manual(values = distinctColorPalette(k=length(unique(autoreactive_grouping$antigen))))
+
+#check for specific reactivities
+auto2 <-  n_autoreactive_b02 %>%
+  group_by(reactivity) %>%
+  filter(!is.na(reactivity)) %>%
+  dplyr::count()
+
+colnames(auto2) <- c("reactivity", "n.2")
+  
+auto3 <- n_autoreactive_b03 %>%
+  group_by(reactivity) %>%
+  filter(!is.na(reactivity)) %>%
+  dplyr::count() 
+
+colnames(auto3) <- c("reactivity", "n.3")
+
+
+auto4 <- n_autoreactive_b04 %>%
+  group_by(reactivity) %>%
+  filter(!is.na(reactivity)) %>%
+  dplyr::count() 
+
+colnames(auto4) <- c("reactivity", "n.4")
+
+
+auto <- inner_join(auto2, auto3, by = "reactivity") %>% inner_join(auto4, by = "reactivity")
+
+
+auto_different <- auto[which(auto$n.2 != auto$n.4),] #which reactivities have a different amount of cells per threshold?
+
+#Make df for plotting
+auto_data <- data.frame(reactivity = c(rep(auto_different$reactivity, times = 3)), 
+                        threshold = c(rep(2, times = length(auto_different$reactivity)), rep(3, times = length(auto_different$reactivity)), rep(4, times = length(auto_different$reactivity))),
+                        n_cells = c(auto_different$n.2, auto_different$n.3, auto_different$n.4))
+auto_data$threshold <- as.factor(auto_data$threshold)
+
+#Plot the amount of cells per threshold per reactivity
+ggplot(auto_data, aes(x=reactivity, y = n_cells, fill = threshold)) +
+  geom_col(position = "dodge") + ggtitle("Number of autoreactive cells per reactivity (B005 and B007)") + ylab("number of cells") +
+  geom_text(aes(label= n_cells), position=position_dodge(width=0.9), vjust=-0.25) + guides(fill=guide_legend(title="threshold")) + scale_fill_manual(values = distinctColorPalette(k=3))
+
+
+#for all cells
+auto_data <- data.frame(reactivity = c(rep(auto$reactivity, times = 3)), 
+                        threshold = c(rep(2, times = length(auto$reactivity)), rep(3, times = length(auto$reactivity)), rep(4, times = length(auto$reactivity))),
+                        n_cells = c(auto$n.2, auto$n.3, auto$n.4))
+auto_data$threshold <- as.factor(auto_data$threshold)
+
+ggplot(auto_data, aes(x=reactivity, y = n_cells, fill = threshold)) +
+  geom_col(position = "dodge") + ggtitle("Number of autoreactive cells per reactivity (B005 and B007)") + ylab("number of cells") +
+  guides(fill=guide_legend(title="threshold")) + scale_fill_manual(values = distinctColorPalette(k=3)) +
+  theme(axis.text.x=element_text(angle = -90, hjust = 0)) #+geom_text(aes(label= n_cells), position=position_dodge(width=0.9), vjust=-0.25)
+
+```
+
+##Clonal overlap D004
+D004 has paired samples: in the lymph node and salivary gland. Which clonotype has cells in both tissues?
+```{r Clonal overlap D004}
+#Clonal overlap D004
+D004 <- contig_full_02[contig_full_02$donor == "D004",]
+D004 <- D004[!duplicated(D004$cell_barcode),] #keep one entry per cell
+
+D004_group <- D004 %>%
+  group_by(clonotype_new, ident) %>%
+  filter(clonotype_new != "none") %>%
+  dplyr::count()
+
+check <- D004_group[duplicated(D004_group$clonotype_new),] #find which clonotypes have entries in both samples/tissues
+check <- D004[D004$clonotype_new %in% check$clonotype_new,] #extract all cells belonging to that clonotype
+```
+
+
+```{r Session information}
+session_info()
+```
+
