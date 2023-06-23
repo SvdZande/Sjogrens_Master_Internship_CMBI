@@ -28,4 +28,5 @@ For comparisons to healthy tonsil data from public datasets, I used the _tonsil_
 For cell-cell interaction analyses using cellchat, I used the _cellchat.Rmd_ script.
 
 Hope this was informative!
+
 Sidney
