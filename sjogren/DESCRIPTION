@@ -1,0 +1,11 @@
+Package: sjogren
+Title: "single-cell analysis of B cells in Sjögren's syndrome"
+Version: 0.0.1.00
+Authors@R: 
+    person("Sidney", "van der Zande", , "sidney.vanderzande@ru.nl", role = c("aut", "cre"),
+           comment = c(ORCID = "0009-0004-7271-9759"))
+Description: This package is designed to assist in the single-cell analysis of cells in Sjögrens disease, with an emphasis on autoreactive B lymphocytes. It can, however, be used for any celltype, as its clonotyping and assignment functions can be adapted to T lymphocytes as well. It also assists in processing multiple Seurat objects at once.
+License:  `use_gpl3_license()` 
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.2.3
