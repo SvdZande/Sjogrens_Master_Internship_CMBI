@@ -3,21 +3,28 @@ This repository contains the full analysis I performed on multimodal datasets fr
 The internship was conducted at the department of Molecular BioSciences (formerly known as the CMBI) at the Radboudumc in Nijmegen, the Netherlands.
 For any questions regarding the repository or its contents, you can mail me at sidney.vanderzande@ru.nl.
 
-## Docker Image
-For all analyses, I used the Bioconductor v.3.16 docker image available at https://hub.docker.com/r/bioconductor/bioconductor_docker. Given that Singularity is installed on your cluster node, it can be installed using the command 
-```
-singularity pull docker://bioconductor/bioconductor_docker:RELEASE_3_16
-```
+This internship was performed under the supervision of prof. dr. Martijn Huijnen and dr. Prashant Singh, collaboration witht he Department of Rheumatology at the Radboudumc.
 
+## Docker Image
+For all analyses, I used the Bioconductor v.3.17 docker image available at https://hub.docker.com/r/bioconductor/bioconductor_docker. Given that Singularity is installed on your cluster node, it can be installed using the command 
+```
+singularity pull docker://bioconductor/bioconductor_docker:RELEASE_3_17
+```
+If you have any questions on Singularity or Docker, or the CMBI in general, the wiki might be of help: https://gitlab.cmbi.umcn.nl/cmbi/general/-/wikis/home
 
 ## Scripts
 The version number of each script is indicated in the file name. If, for any reason, you would like to request a previous version of any script mentioned here, and you do not have access to the Radboudumc Octarine cluster, please email me at the email address mentioned at the beginning.
-Most of these packages use functions that I moved to the self-designed __sjogren__ package. This package can be downloaded off of the Octarine cluster. Later on, I will make this package available to GitHub.
+Most of these packages use functions that I moved to the self-designed __sjogren__ package. This package can be downloaded off of the Octarine cluster or off of this GitHub repository. I will not be further developing this package after completion of the project, but I am happy to answer any questions you may have on the functions that are in it.
 
-The main script I used in my analysis is the _full_analysis.R_ script. This script contains the main single-cell analysis performed on all samples of SjS patients.
+The main script I used in my analysis is the _full_analysis.Rmd_ script. This script contains the main single-cell analysis performed on all samples of SjS patients.
 
-For B cell clonotyping, I used the _clonotype_calling_final.R_ script.
+For B cell clonotyping, I used the _clonotype_calling_final.Rmd_ script.
 
-For running the Immcantation analysis framework, I used the _immcantation.R_ script.
+For running the Immcantation analysis framework, I used the _immcantation.Rmd_ script.
 
-For comparisons to healthy tonsil data from public datasets, I used the _tonsil_b_analysis.R_ script.
+For comparisons to healthy tonsil data from public datasets, I used the _tonsil_b_analysis.Rmd_ script.
+
+For cell-cell interaction analyses using cellchat, I used the _cellchat.Rmd_ script.
+
+Hope this was informative!
+Sidney
