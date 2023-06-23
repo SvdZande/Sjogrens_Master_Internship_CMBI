@@ -3,7 +3,8 @@ This repository contains the full analysis I performed on multimodal datasets fr
 The internship was conducted at the department of Molecular BioSciences (formerly known as the CMBI) at the Radboudumc in Nijmegen, the Netherlands.
 For any questions regarding the repository or its contents, you can mail me at sidney.vanderzande@ru.nl.
 
-This internship was performed under the supervision of prof. dr. Martijn Huijnen and dr. Prashant Singh, collaboration witht he Department of Rheumatology at the Radboudumc.
+This internship was performed under the supervision of prof. dr. Martijn Huijnen and dr. Prashant Singh, in collaboration with the Department of Rheumatology at the Radboudumc.
+A paper published previously by our group, which has some overlap with this project, can be found under the DOI 10.1136/annrheumdis-2021-221604.
 
 ## Docker Image
 For all analyses, I used the Bioconductor v.3.17 docker image available at https://hub.docker.com/r/bioconductor/bioconductor_docker. Given that Singularity is installed on your cluster node, it can be installed using the command 
