@@ -1,0 +1,1229 @@
+---
+Title: "Integration of SjS and tonsil-derived datasets"
+Author: Sidney van der Zande
+Date: 23-06-2023
+---
+
+#Tonsil analysis
+This script is meant to be used together with the full_analysis v1.4_FINAL script. It integrates the SjS-derived data generated in the full_analysis script with two reference datasets containing healthy tonsil data. One paper contains all immune celltypes, the other only contains germinal centre B cells. The datasets are integrated using Seurat's RPCA approach.
+
+The paper containing the tonsil atlas can be found here: https://www.biorxiv.org/content/10.1101/2022.06.24.497299v1 (doi: https://doi.org/10.1101/2022.06.24.497299)
+The data in this paper is available here: https://zenodo.org/record/6340174 (take the tonsil_atlas_cite_seurat_obj.rds)
+
+The paper containing the germinal centre dataset can be found here: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7537389/ (doi: 10.1084/jem.20200483)
+The data in this paper is here: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE139891 (near "Samples", click on "More" and take samples GC3a(Ab) and GC3b(Ab)).
+
+```{r Load libraries}
+suppressMessages(library(scran))
+suppressMessages(library(SeuratWrappers))
+suppressMessages(library(batchelor))
+suppressMessages(library(RColorBrewer))
+suppressMessages(library(SeuratDisk))
+suppressMessages(library(ggplot2))
+suppressMessages(library(Matrix))
+suppressMessages(library(ggpubr))
+suppressMessages(library(gplots))
+suppressMessages(library(dplyr))
+suppressMessages(library(org.Hs.eg.db))
+suppressMessages(library(clustree))
+suppressMessages(library(pheatmap))
+suppressMessages(library(viridis))
+suppressMessages(library(plotly))
+suppressMessages(library(enrichplot))
+suppressMessages(library(readr))
+suppressMessages(library(Seurat))
+suppressMessages(library(clusterProfiler))
+suppressMessages(library(cowplot))
+suppressMessages(library(Azimuth))
+suppressMessages(library(irlba))
+suppressMessages(library(scico))
+suppressMessages(library(scuttle))
+suppressMessages(library(tibble))
+suppressMessages(library(tidyr))
+suppressMessages(library(readxl))
+suppressMessages(library(ggrepel))
+suppressMessages(library(scRepertoire))
+suppressMessages(library(data.table))
+suppressMessages(library(patchwork))
+suppressMessages(library(ggbreak))
+suppressMessages(library(devtools))
+suppressMessages(library(roxygen2))
+suppressMessages(install("sjogren"))
+suppressMessages(library(sjogren))
+suppressMessages(library(SingleCellExperiment))
+suppressMessages(library(randomcoloR))
+suppressMessages(library(dittoSeq))
+```
+
+```{r Set a seed}
+set.seed(1)
+```
+
+In this analysis, we integrate the entire seurat object, so also the T cells. Therefore, we need to transfer the labels from the more specific B cell analyses to the larger object.
+
+```{r Add B cell labels}
+#Add seurat annotation labels
+annotations_full <- seurat_combined_subset[,c("cell_barcode", "annotation_full")]
+annotations_B <- seurat_combined_subset[,c("cell_barcode", "annotation")]
+annotations.df <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/gc_recluster_donorsep.csv")
+rownames(annotations.df) <- annotations.df$X
+annotations.df$X <- NULL
+annotations.df$cell_barcode <- rownames(annotations.df)
+colnames(annotations.df) <- "annotations_gc"
+
+annotations.df <- right_join(annotations.df, annotations_B, by = "cell_barcode") #merge with B cell labels
+annotations.df <- right_join(annotations.df, annotations_full, by = "cell_barcode") #merge with general labels
+annotations.df$annotation_full[!is.na(annotations.df$annotation)] <- annotations.df$annotation[!is.na(annotations.df$annotation)] #replace general labels with B cell labels wherever applicable
+annotations.df$annotation <- NULL
+rownames(annotations.df) <- annotations.df$cell_barcode
+annotations.df$cell_barcode <- NULL
+colnames(annotations.df) <- c("annotation", "annotation_gc")
+
+seurat_combined <- AddMetaData(seurat_combined, annotations.df)
+```
+
+```{r Read tonsil dataset}
+#Integration with tonsil reference dataset
+tonsil <- readRDS("/home/sidneyz/sjogren_data/seurat_references/20220215_tonsil_atlas_cite_seurat_obj.rds")
+#Rename ADT assay to CITE
+tonsil[["CITE"]] <- tonsil[["ADT"]]
+tonsil[["ADT"]] <- NULL
+colnames(tonsil@meta.data)[colnames(tonsil@meta.data) == "annotation_figure_1"] <- "annotation" #make sure original annotations can be integrated with our seurat object
+```
+
+The next chunk of code should only be run if you are working with the raw count matrices from the data deposit at the link above. If you already have access to my files, you can skip this chunk and run the next one.
+
+```{r Format germinal centre datasets}
+#From raw matrices
+germinal_3a.cite <- read_table(gzfile("/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/GSM4560816_GC3a_Ab_counts.txt.gz"))
+germinal_3b.cite <- read_table(gzfile("/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/GSM4560817_GC3b_Ab_counts.txt.gz"))
+germinal_3a.gex <- read_table(gzfile("/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/GSM4560814_GC3a_umi.txt.gz"))
+germinal_3b.gex <- read_table(gzfile("/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/GSM4560815_GC3b_umi.txt.gz"))
+
+#Convert to proper matrix by only keeping real gene names
+germinal_3a.gex.df <- as.data.frame(germinal_3a.gex)
+germinal_3a.gex.df[,1] <- gsub(".*;", "", germinal_3a.gex.df[,1], perl = TRUE) #only keep gene names: remove ENSEMBL identifiers
+germinal_3a.gex.df <- germinal_3a.gex.df[!duplicated(germinal_3a.gex.df[,1]),] #remove non-unique genes, which are mostly "Metazoa" and "SNORNP"
+rownames(germinal_3a.gex.df) <- germinal_3a.gex.df[,1]
+germinal_3a.gex.df[,1] <- NULL
+colnames(germinal_3a.gex.df) <-  gsub("-1", "", colnames(germinal_3a.gex.df), perl = TRUE) #remove -1 flag
+germinal_3a.cite.df <- as.data.frame(germinal_3a.cite)
+rownames(germinal_3a.cite.df) <- c("CD184", "CD44", "CD69", "CD83", "CD9", "CD196") #change CITE-seq names to proper names
+germinal_3a.cite.df[,1] <- NULL
+colnames(germinal_3a.cite.df) <-  gsub("-1", "", colnames(germinal_3a.cite.df), perl = TRUE) #remove -1 flag
+
+#Do the same for the second replicate
+germinal_3b.gex.df <- as.data.frame(germinal_3b.gex)
+germinal_3b.gex.df[,1] <- gsub(".*;", "", germinal_3b.gex.df[,1], perl = TRUE) #only keep gene names: remove ENSEMBL identifiers
+germinal_3b.gex.df <- germinal_3b.gex.df[!duplicated(germinal_3b.gex.df[,1]),] #remove non-unique genes, which are mostly "Metazoa" and "SNORNP"
+rownames(germinal_3b.gex.df) <- germinal_3b.gex.df[,1]
+germinal_3b.gex.df[,1] <- NULL
+colnames(germinal_3b.gex.df) <-  gsub("-1", "", colnames(germinal_3b.gex.df), perl = TRUE) #remove -1 flag
+germinal_3b.cite.df <- as.data.frame(germinal_3b.cite)
+rownames(germinal_3b.cite.df) <- c("CD184", "CD44", "CD69", "CD83", "CD9", "CD196")
+germinal_3b.cite.df[,1] <- NULL
+colnames(germinal_3b.cite.df) <-  gsub("-1", "", colnames(germinal_3b.cite.df), perl = TRUE) #remove -1 flag
+
+#Only keep cells that appear in both cite and gex
+germinal_3a.gex.df <- germinal_3a.gex.df[,colnames(germinal_3a.gex.df) %in% colnames(germinal_3a.cite.df)]
+germinal_3b.gex.df <- germinal_3b.gex.df[,colnames(germinal_3b.gex.df) %in% colnames(germinal_3b.cite.df)]
+
+#Make a full object out of the individual matrices
+germinal_3a.gex <- as.matrix(germinal_3a.gex.df)
+germinal_3a.cite <- as.matrix(germinal_3a.cite.df)
+germinal_3a <- list(germinal_3a.gex, germinal_3a.cite)
+names(germinal_3a) <- c("Gene Expression", "Antibody Capture")
+
+
+germinal_3b.gex <- as.matrix(germinal_3b.gex.df)
+germinal_3b.cite <- as.matrix(germinal_3b.cite.df)
+germinal_3b <- list(germinal_3b.gex, germinal_3b.cite)
+names(germinal_3b) <- c("Gene Expression", "Antibody Capture")
+
+saveRDS(germinal_3a, "/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/germinal_3a.RDS")
+saveRDS(germinal_3b, "/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/germinal_3b.RDS")
+```
+
+
+```{r Create seurat objects from germinal centre datasets}
+#Read in data from processed matrices (code chunk above)
+germinal_3a <- readRDS("/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/germinal_3a.RDS")
+germinal_3b <- readRDS("/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/germinal_3b.RDS")
+
+germ_list <- list(germinal_3a, germinal_3b)
+names(germ_list) <- c("3A", "3B")
+
+#Create a seurat object for both germinal genesets
+germ_list <- sjogren::generate_seurat_objects(germ_list, min.cells = 5, min.genes = 200)
+```
+
+```{r Quality control of germinal centre datasets}
+#Quality control
+for (i in seq_along(germ_list)){
+  germ_list[[i]][['percent.MT']] <- PercentageFeatureSet(germ_list[[i]], pattern = "^MT-")
+}
+
+#add the percentage of ribosomal genes
+for (i in seq_along(germ_list)){
+  germ_list[[i]][['percent.ribosomal']] <- PercentageFeatureSet(germ_list[[i]], pattern = "^RPS|^RPL|^MRPS|^MRPL")
+}
+
+for (i in seq_along(germ_list)){
+  germ_list[[i]] <- suppressWarnings(CellCycleScoring(germ_list[[i]], s.features = cc.genes$s.genes, g2m.features = cc.genes$g2m.genes, set.ident = FALSE))
+}
+```
+
+```{r Establish QC thresholds}
+#Object 3A
+counts <- germ_list[["3A"]][['RNA']]@counts
+genes_per_cell <- Matrix::colSums(counts>0) # count a gene only if it has non-zero reads mapped.
+counts_per_cell <- Matrix::colSums(counts)#calculate the amount of counts per cell
+plot(sort(genes_per_cell), xlab='cell', log='y', main='genes per cell (ordered)') #decide on a cutoff
+
+#Enter the cutoffs here:
+MIN_GENES_PER_CELL.3a <-500
+MAX_GENES_PER_CELL.3a <- 6500
+
+# now replot with the thresholds being shown:
+plot(sort(genes_per_cell), xlab='cell', log='y', main='genes per cell (ordered)')
+abline(h=MIN_GENES_PER_CELL.3a, col='magenta')  # lower threshold
+abline(h=MAX_GENES_PER_CELL.3a, col='gold') # upper threshold
+
+#Do the same for the mitochondrial gene cutoff
+mito_genes <- grep("^mt-", rownames(counts) , ignore.case=T, value=T)
+mito_gene_read_counts = Matrix::colSums(counts[mito_genes,])
+pct_mito = mito_gene_read_counts / counts_per_cell * 100
+plot(sort(pct_mito), xlab = "cells sorted by percentage mitochondrial counts", ylab =
+       "percentage mitochondrial counts")
+
+MAX_PCT_MITO.3a <- 13
+
+plot(sort(pct_mito))
+abline(h=MAX_PCT_MITO.3a, col='red')
+```
+
+```{r Establish QC thresholds}
+#Object 3B
+counts <- germ_list[["3B"]][['RNA']]@counts
+genes_per_cell <- Matrix::colSums(counts>0) # count a gene only if it has non-zero reads mapped.
+counts_per_cell <- Matrix::colSums(counts)#calculate the amount of counts per cell
+plot(sort(genes_per_cell), xlab='cell', log='y', main='genes per cell (ordered)') #decide on a cutoff
+
+#Enter the cutoffs here:
+MIN_GENES_PER_CELL.3b <-600
+MAX_GENES_PER_CELL.3b <- 6500
+
+# now replot with the thresholds being shown:
+plot(sort(genes_per_cell), xlab='cell', log='y', main='genes per cell (ordered)')
+abline(h=MIN_GENES_PER_CELL.3b, col='magenta')  # lower threshold
+abline(h=MAX_GENES_PER_CELL.3b, col='gold') # upper threshold
+
+#Do the same for the mitochondrial gene cutoff
+mito_genes <- grep("^mt-", rownames(counts) , ignore.case=T, value=T)
+mito_gene_read_counts = Matrix::colSums(counts[mito_genes,])
+pct_mito = mito_gene_read_counts / counts_per_cell * 100
+plot(sort(pct_mito), xlab = "cells sorted by percentage mitochondrial counts", ylab =
+       "percentage mitochondrial counts")
+
+MAX_PCT_MITO.3b <- 14
+
+plot(sort(pct_mito))
+abline(h=MAX_PCT_MITO.3b, col='red')
+```
+
+```{r Subset seurat objects}
+#QC
+MIN_GENES_PER_CELL.3a <-500
+MAX_GENES_PER_CELL.3a <- 6500
+MIN_GENES_PER_CELL.3b <-600
+MAX_GENES_PER_CELL.3b <- 6500
+MAX_PCT_MITO.3a <- 13
+MAX_PCT_MITO.3b <- 14
+
+germ_list[["3A"]] <- subset(germ_list[["3A"]], subset = nFeature_RNA > MIN_GENES_PER_CELL.3a & nFeature_RNA < MAX_GENES_PER_CELL.3a & percent.MT < MAX_PCT_MITO.3a)
+germ_list[["3B"]] <- subset(germ_list[["3B"]], subset = nFeature_RNA > MIN_GENES_PER_CELL.3b & nFeature_RNA < MAX_GENES_PER_CELL.3b & percent.MT < MAX_PCT_MITO.3b)
+```
+
+```{r Formatting of seurat objects}
+#Change some metadata
+germ_list[["3A"]]$donor <- "GC_3A"
+germ_list[["3B"]]$donor <- "GC_3B"
+germ_list[["3A"]]$condition <- "HC"
+germ_list[["3B"]]$condition <- "HC"
+germ_list[["3A"]]$tissue <- "Germinal center"
+germ_list[["3B"]]$tissue <- "Germinal center"
+
+#Merge the individual objects
+seurat_germ <- merge(germ_list[["3A"]], germ_list[["3B"]], add.cell.ids = c("3A", "3B"))
+seurat_germ@meta.data$orig.ident <- "germinal_b"
+seurat_germ@meta.data$cell_barcode <- rownames(seurat_germ@meta.data)
+
+#Remove contaminating genes
+seurat_germ_list <- list(seurat_germ)
+seurat_germ_list <- sjogren::remove_genes(seurat_germ_list)
+seurat_germ <- seurat_germ_list[[1]]
+rm(seurat_germ_list)
+```
+
+```{r Filter out doublets from tonsil dataset}
+#Back to the tonsil dataset:
+#Filter out cells with a BCR and TCR
+tonsil@meta.data$bcr_flag[is.na(tonsil@meta.data$bcr_flag)] <- "F"
+tonsil@meta.data$tcr_flag[is.na(tonsil@meta.data$tcr_flag)] <- "F"
+
+tonsil <- subset(tonsil, subset = (bcr_flag == "F" | tcr_flag == "F"))
+```
+
+The next bit is a bit tricky. The tonsil dataset contains CITE-seq data, but some of the proteins are named differently than our dataset and will therefore not integrate when merging the objects. I had to fix this by manually renaming the differently named proteins for each assay.
+
+```{r Fix CITE-seq naming of tonsil object}
+#Fix the CITE naming of this object
+tonsil_cite <- tonsil[["CITE"]]@counts
+rownames(tonsil_cite)[rownames(tonsil_cite) == "HLA-A-B-C"] <- "HLA.ABC"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "HLA-DR"] <- "HLA.DR"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "Ig-light-chain-kappa"] <- "Ig.LightChain.k"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "Ig-light-chain-lambda"] <- "Ig.LightChain.l"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "LOX-1"] <- "LOX.1"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "TCR-alpha-beta"] <- "TCR.AB"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "TCR-Valpha7.2"] <- "TCR.Va7.2"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "TCR-Vdelta2"] <- "TCR.Vd2"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "integrin-beta7"] <- "integrin.b7"
+
+cite.mnn <- as.data.frame(rownames(tonsil_cite))
+colnames(cite.mnn) <- "before"
+rownames(tonsil_cite) <- gsub("-.*", "", rownames(tonsil_cite))
+cite.mnn$after <- rownames(tonsil_cite)
+
+#check if naming matches up
+cbind.fill <- function(...){
+  nm <- list(...) 
+  nm <- lapply(nm, as.matrix)
+  n <- max(sapply(nm, nrow)) 
+  do.call(cbind, lapply(nm, function (x) 
+    rbind(x, matrix(, n-nrow(x), ncol(x))))) 
+}
+
+panel.large.df <- as.data.frame(panel.large)
+panel.large.df.order <- panel.large.df[match(cite.mnn$after, panel.large.df$panel.large),]
+
+cite.mnn_full <- cbind.fill(cite.mnn, panel.large.df.order)
+cite.mnn_full <- as.data.frame(cite.mnn_full)
+cite_missing <- panel.large.df[!(panel.large.df$panel.large %in% cite.mnn_full$V3),]
+cite_missing <- as.data.frame(cite_missing)
+
+#manually fix entries that have incorrect names
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD14"] <- "CD14-M5E2"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD226"] <- "CD226-11A8"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD20"] <- "CD20-2H7"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD38"] <- "CD38-HIT2"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD3"] <- "CD3-UCHT1"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD4"] <- "CD4-RPA.T4"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "FcepsilonRIalpha"] <- "FceRIa"
+
+
+tonsil[["CITE"]]@counts <- tonsil_cite
+
+tonsil_cite <- tonsil[["CITE"]]@data
+rownames(tonsil_cite)[rownames(tonsil_cite) == "HLA-A-B-C"] <- "HLA.ABC"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "HLA-DR"] <- "HLA.DR"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "Ig-light-chain-kappa"] <- "Ig.LightChain.k"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "Ig-light-chain-lambda"] <- "Ig.LightChain.l"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "LOX-1"] <- "LOX.1"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "TCR-alpha-beta"] <- "TCR.AB"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "TCR-Valpha7.2"] <- "TCR.Va7.2"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "TCR-Vdelta2"] <- "TCR.Vd2"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "integrin-beta7"] <- "integrin.b7"
+
+rownames(tonsil_cite) <- gsub("-.*", "", rownames(tonsil_cite))
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD14"] <- "CD14-M5E2"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD226"] <- "CD226-11A8"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD20"] <- "CD20-2H7"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD38"] <- "CD38-HIT2"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD3"] <- "CD3-UCHT1"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD4"] <- "CD4-RPA.T4"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "FcepsilonRIalpha"] <- "FceRIa"
+
+tonsil[["CITE"]]@data <- tonsil_cite
+
+tonsil_cite <- tonsil[["CITE"]]@scale.data
+rownames(tonsil_cite)[rownames(tonsil_cite) == "HLA-A-B-C"] <- "HLA.ABC"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "HLA-DR"] <- "HLA.DR"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "Ig-light-chain-kappa"] <- "Ig.LightChain.k"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "Ig-light-chain-lambda"] <- "Ig.LightChain.l"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "LOX-1"] <- "LOX.1"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "TCR-alpha-beta"] <- "TCR.AB"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "TCR-Valpha7.2"] <- "TCR.Va7.2"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "TCR-Vdelta2"] <- "TCR.Vd2"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "integrin-beta7"] <- "integrin.b7"
+rownames(tonsil_cite) <- gsub("-.*", "", rownames(tonsil_cite))
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD14"] <- "CD14-M5E2"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD226"] <- "CD226-11A8"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD20"] <- "CD20-2H7"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD38"] <- "CD38-HIT2"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD3"] <- "CD3-UCHT1"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "CD4"] <- "CD4-RPA.T4"
+rownames(tonsil_cite)[rownames(tonsil_cite) == "FcepsilonRIalpha"] <- "FceRIa"
+
+tonsil[["CITE"]]@scale.data <- tonsil_cite
+```
+
+```{r Add metadata}
+#Add metadata
+tonsil@meta.data$condition <- "HC"
+tonsil@meta.data$tissue <- "Tonsil"
+tonsil@meta.data$orig.ident <- "tonsilpaper"
+colnames(tonsil@meta.data)[colnames(tonsil@meta.data) == "donor_id"] <- "donor"
+seurat_combined@meta.data$orig.ident <- "sjogren"
+```
+
+```{r Remove contaminating genes}
+#Remove contaminating genes
+reference_list <- list(tonsil)
+names(reference_list) <- c("tonsil")
+
+reference_list_filter <- sjogren::remove_genes(reference_list)
+
+tonsil <- reference_list_filter[[1]]
+rm(reference_list_filter)
+```
+
+```{r Normalise both reference objects}
+#Normalise and find variable features
+healthy_list <- list(seurat_germ, tonsil)
+names(healthy_list) <- c("germinal_center", "tonsil")
+
+for (i in seq_along(healthy_list)){
+  healthy_list[[i]] <- healthy_list[[i]] %>%
+    NormalizeData( verbose = FALSE, normalization.method = "CLR", margin = 1) %>%
+    FindVariableFeatures(selection.method = "vst", 
+                         nfeatures = 3000, verbose = FALSE)
+  if ("CITE" %in% names(healthy_list[[i]])){
+    NormalizeData(healthy_list[[i]], normalization.method = "CLR", margin = 2, assay = "CITE", verbose = FALSE)
+    VariableFeatures(healthy_list[[i]][["CITE"]]) <- rownames(healthy_list[[i]][["CITE"]])
+  }
+  print(paste("reference object", i, "complete"))
+}
+
+seurat_germ <- healthy_list[[1]]
+tonsil <- healthy_list[[2]]
+
+rm(healthy_list)
+```
+
+```{r Rename CITE assay of our own dataset}
+#Remove Hu. in front of CITE-seq names
+rownames(seurat_combined[["CITE"]]@counts) <- gsub("^Hu.|^HuMs.|^HuMsRt.", "", rownames(seurat_combined[["CITE"]]@counts))
+rownames(seurat_combined[["CITE"]]@data) <- gsub("^Hu.|^HuMs.|^HuMsRt.", "", rownames(seurat_combined[["CITE"]]@data))
+rownames(seurat_combined[["CITE"]]@scale.data) <- gsub("^Hu.|^HuMs.|^HuMsRt.", "", rownames(seurat_combined[["CITE"]]@scale.data))
+```
+
+##RPCA integration
+```{r RPCA integration}
+#Attempt with RPCA
+#Merge the objects to set them to have the same dimensions: then split them again
+full_object <- merge(seurat_combined, c(tonsil, seurat_germ), merge.data = T)
+object_list <- SplitObject(full_object, split.by = "orig.ident")
+object_list <- lapply(X = object_list, FUN = function(x) {
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 3000, verbose = F)
+})
+
+#Find integration features
+features <- SelectIntegrationFeatures(object.list = object_list)
+
+object_list <- lapply(X = object_list, FUN = function(x) {
+  x <- ScaleData(x, features = features, verbose = F)
+  x <- RunPCA(x, features = features, verbose = F)
+})
+
+#Perform integration
+anchors <- FindIntegrationAnchors(object.list = object_list, anchor.features = features, reduction = "rpca")
+order <- matrix(c(-2, 1, -3, -1), ncol = 2) #this would ensure that the reference datasets are integrated first
+combined <- IntegrateData(anchorset = anchors, sample.tree = order)
+```
+
+##ANALYSES
+```{r Scaling, dimension reduction and clustering}
+#Clustering analyses
+DefaultAssay(combined) <- "integrated"
+
+all.genes <- rownames(combined)
+combined <- ScaleData(combined, features = all.genes, verbose = FALSE)
+combined <- ScaleData(combined, features = rownames(combined[["CITE"]]), assay = "CITE", verbose = FALSE)
+
+combined <- RunICA(combined, features = VariableFeatures(object = combined), verbose = FALSE)
+
+combined <- RunUMAP(combined, reduction =  "ica", dims = 1:40)
+
+combined <- FindNeighbors(combined, reduction = "ica", dims = 1:40)
+
+combined <- FindClusters(combined, resolution =  seq(from = 0.1, to = 0.9, by = 0.1), algorithm = 3)
+clust_seurat <- combined@meta.data %>% dplyr::select(dplyr::contains("integrated_snn_res."))
+clustree(clust_seurat, prefix="integrated_snn_res.")
+
+
+combined <- FindClusters(combined, resolution = 0.4, algorithm = 3) #pick the resolution that fits best.
+```
+
+```{r UMAP visualisation}
+#UMAPping
+n <-length(levels(combined))
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+cols = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+pie(rep(1,n), col=sample(cols, n))
+clust_cols <- cols[1:n]
+phase_cols <- c("peachpuff", "blue2", "orange3")
+Id_cols <- c('green','red')
+dis_cols <- c('chartreuse1','orange3', 'firebrick','blue2')
+annot_cols <- cols[41:71]
+annot_cols.2 <- cols[41:90]
+
+umap <- DimPlot(combined, reduction = 'umap', label = TRUE, repel = TRUE, label.size = 4, cols = annot_cols, raster = F) + NoLegend()
+umap_ident <- DimPlot(combined, reduction = 'umap', label = F, repel = TRUE,  group.by = "orig.ident", raster = F)
+umap_condition <- DimPlot(combined, reduction = 'umap', label = F, repel = TRUE, group.by = "condition", raster = F)
+umap_tissue <- DimPlot(combined, reduction = 'umap', label = F, repel = TRUE, group.by = "tissue", raster = F)
+
+#Plot of original annotations before merging:
+umap_annotation <- DimPlot(combined, reduction = 'umap', label = TRUE, repel = TRUE, label.size = 4, group.by = "annotation", cols = annot_cols.2, raster = FALSE) + NoLegend()
+
+features_rna <- FeaturePlot(combined, raster = F, features = c("rna_CD3D", "rna_CD4", "rna_CD8A", "rna_CD19", "rna_NCAM1", "rna_ITGAX", "rna_CD14", "rna_CD38","rna_CD79B"), reduction = "umap", cols = c("lightgrey", "darkblue"), order = T) + NoLegend()
+features_rna.2 <- FeaturePlot(combined, raster = F, features = c("rna_CD83", "rna_THY1", "rna_CD19", "rna_MZB1", "rna_CD79A", "rna_BCL6", "rna_CD27", "rna_IGHM", "rna_IGHG1"), reduction = "umap", cols = c("lightgrey", "darkblue"), order = T) + NoLegend()
+DefaultAssay(combined) <- "CITE"
+features_cite <- FeaturePlot(combined, raster = F, features = c("CD3-UCHT1", "CD4-RPA.T4", "CD8", "CD19", "CD56", "CD11c"), order = T, reduction = "umap", cols = c("lightgrey", "darkgreen"), slot = "data")
+DefaultAssay(combined) <- "integrated"
+
+umap
+umap_ident
+umap_tissue
+umap_annotation
+features_rna
+features_rna.2
+features_cite
+```
+
+```{r Azimuth}
+#Azimuth
+DefaultAssay(combined) <- "RNA"
+combined <- RunAzimuth(combined, reference = "tonsilref")
+DefaultAssay(combined) <- "integrated"
+
+random_col_150 <- distinctColorPalette(k=150)
+
+prediction_umap.l1 <- DimPlot(combined, reduction = "umap", label = F, size = 1, group.by = "predicted.celltype.l1", cols = annot_cols.2, repel = T, raster = F) 
+prediction_score_umap.l1 <- FeaturePlot(combined, features = ("predicted.celltype.l1.score"), raster = F) 
+prediction_umap.l2 <- DimPlot(combined, reduction = "umap", label = T, size = 1, group.by = "predicted.celltype.l2", cols = random_col_150, repel = T, raster = F) + NoLegend()
+prediction_score_umap.l2 <- FeaturePlot(combined, features = ("predicted.celltype.l2.score"), raster = F) 
+
+split.l1 <- DimPlot(combined, reduction = "umap", label = F, size = 1, group.by = "predicted.celltype.l1", cols = annot_cols.2, repel = T, raster = F, split.by = "orig.ident") 
+split.l2 <- DimPlot(combined, reduction = "umap", label = T, size = 1, group.by = "predicted.celltype.l2", cols = random_col_150, repel = T, raster = F, split.by = "orig.ident") + NoLegend()
+
+prediction_umap.l1
+prediction_score_umap.l1 + scale_color_viridis(option = "inferno", direction = -1, begin = 0, end = 1)
+
+prediction_umap.l2
+prediction_score_umap.l2 + scale_color_viridis(option = "inferno", direction = -1, begin = 0, end = 1)
+
+split.l1
+split.l2
+```
+
+```{r Marker gene analysis}
+#Marker gene analysis
+markers <- FindAllMarkers(combined, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "MAST", slot = "data", assay = "RNA")
+
+fullpanel <- subset(combined, orig.ident %in% c("sjogren", "tonsilpaper")) #only grab cells with an extensive panel
+fullpanel <- subset(fullpanel, donor %in% c("B005", "B007", "D001","D002"), invert = T)
+
+fullpanel <- ScaleData(fullpanel, features = rownames(fullpanel[["CITE"]]), assay = "CITE", verbose = FALSE)
+fullpanel_markers <- FindAllMarkers(fullpanel, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox", slot = "data", assay = "CITE")
+
+#Filter based on p value:
+markers <- subset(markers, markers$p_val_adj <= 0.05)
+markers <- markers[order(markers$cluster , -markers$avg_log2FC),]
+
+top_15_markers_per_cluster <-markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 15, order_by = avg_log2FC)
+
+
+fullpanel_markers <- fullpanel_markers[fullpanel_markers$p_val_adj <= 0.05,]
+fullpanel_markers <- fullpanel_markers[order(fullpanel_markers$cluster , -abs(fullpanel_markers$avg_log2FC)),]
+
+top_15_markers_per_cluster.fullpanel <-fullpanel_markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 15, order_by = abs(avg_log2FC))
+
+write.csv(markers, "/home/sidneyz/sjogren_results/own_data/tonsilintegration_fullobject_lognorm_RNA_markers.csv")
+write.csv(fullpanel_markers, "/home/sidneyz/sjogren_results/own_data/tonsilintegration_fullobject_lognorm_CITE_markers_fullpanel.csv")
+
+markers <- read.csv("/home/sidneyz/sjogren_results/own_data/tonsilintegration_fullobject_RNA_markers.csv")
+fullpanel_markers <- read.csv("/home/sidneyz/sjogren_results/own_data/tonsilintegration_fullobject_CITE_markers_fullpanel.csv")
+```
+
+``` {r Annotate the clusters}
+#Annotation
+annotation_full <-  c("Naive B", "Naive CD4+ T", "Salivary gland T", "LZ", "MBC", "DZ", #0 to 5
+                      "Activated CD4+ T", "Tfh", "Treg", "PC", "non-proliferative DZ", #6 to 10
+                      "GC (re)-entry", "LZ cluster 2", "DZ cluster 3", "gd T", "CD11c+ MBC", #11 to 15
+                      "CD4+ T (B007)", "SG MBC", "SG naive", "Activated CD8+ T", "Salivary gland PC", #15 to 20
+                      "NK", "Myeloid", "CD8+ SCM", "Mast", "Fibroblast-like", #21 to 25
+                      "pDC" #26
+)
+
+names(annotation_full) <- as.integer(levels(combined))
+
+#add to metadata
+combined@meta.data$cell_barcode <- rownames(combined@meta.data)
+seurat_clusters <- combined@meta.data[,c("cell_barcode", "seurat_clusters")]
+annotation_full.df <- as.data.frame(annotation_full)
+annotation_full.df$seurat_clusters <- rownames(annotation_full.df)
+annotation_full.df <- inner_join(seurat_clusters, annotation_full.df , by = "seurat_clusters")
+rownames(annotation_full.df) <- annotation_full.df$cell_barcode
+annotation_full.df$cell_barcode <- NULL
+annotation_full.df$seurat_clusters <- NULL
+colnames(annotation_full.df) <- "annotation_integrated_full"
+combined <- AddMetaData(combined, annotation_full.df)
+```
+
+```{r Save the seurat object}
+#Save object
+saveRDS(combined, "sjogren_results/combined.RDS")
+```
+
+##B cell subsetting
+
+```{r B cell subsetting}
+#Subset based on cluster
+combined_subset <- subset(combined, idents = c(1,14,5,12,3,2,7,9,21))
+dim(combined_subset)
+
+#Remove cells expressing non-B genes
+DefaultAssay(combined_subset) <- "RNA"
+combined_subset <- subset(combined_subset, subset = (CD3E == 0 & CD3D == 0 & CD3G == 0 & VWF == 0 & C1QB == 0 & HBB == 0 & CD14 == 0 & FCGR3A == 0))
+dim(combined_subset)
+```
+
+```{r Reclustering}
+#Redo analyses
+DefaultAssay(combined_subset) <- "integrated"
+
+all.genes <- rownames(combined_subset)
+combined_subset <- ScaleData(combined_subset, features = all.genes, verbose = FALSE)
+combined_subset <- ScaleData(combined_subset, features = rownames(combined_subset[["CITE"]]), assay = "CITE", verbose = FALSE)
+
+combined_subset <- RunICA(combined_subset, features = VariableFeatures(object = combined_subset), verbose = FALSE)
+combined_subset <- RunICA(combined_subset, assay = "CITE", features = VariableFeatures(object = combined_subset[["CITE"]]), reduction.name = "cite_ica", verbose = FALSE, nics = 9)
+
+combined_subset <- RunUMAP(combined_subset, reduction =  "ica", dims = 1:40)
+
+combined_subset <- FindNeighbors(combined_subset, reduction = "ica", dims = 1:40)
+
+combined_subset <- FindClusters(combined_subset, resolution =  seq(from = 0.1, to = 0.9, by = 0.1), algorithm = 3)
+clust_seurat <- combined_subset@meta.data %>% dplyr::select(dplyr::contains("integrated_snn_res."))
+clustree(clust_seurat, prefix="integrated_snn_res.")
+
+
+combined_subset <- FindClusters(combined_subset, resolution = 0.7, algorithm = 3) #pick resolution that fits best
+```
+
+```{r UMAP visualisation}
+#UMAPping
+n <-length(levels(combined_subset))
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+cols = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+pie(rep(1,n), col=sample(cols, n))
+clust_cols <- cols[1:n]
+phase_cols <- c("peachpuff", "blue2", "orange3")
+Id_cols <- c('green','red')
+dis_cols <- c('chartreuse1','orange3', 'firebrick','blue2')
+annot_cols <- cols[41:71]
+annot_cols.2 <- cols[41:90]
+
+umap <- DimPlot(combined_subset, reduction = 'umap', label = TRUE, repel = TRUE, label.size = 4, cols = annot_cols) + NoLegend()
+umap_ident <- DimPlot(combined_subset, reduction = 'umap', label = F, repel = TRUE, label.size = 2.5,  group.by = "orig.ident")
+umap_condition <- DimPlot(combined_subset, reduction = 'umap', label = TRUE, repel = TRUE, label.size = 2.5, group.by = "condition") + NoLegend()
+umap_donor <- DimPlot(combined_subset, reduction = 'umap', label = F, repel = TRUE, label.size = 2.5, group.by = "donor", cols = annot_cols)
+umap_tissue <- DimPlot(combined_subset, reduction = 'umap', label = F, repel = TRUE, label.size = 2.5, group.by = "tissue")
+
+combined_subset@meta.data$antigen[is.na(combined_subset@meta.data$antigen)] <- "NA"
+combined_subset@meta.data$group[is.na(combined_subset@meta.data$group)] <- "NA"
+
+umap_antigen <- DimPlot(combined_subset, reduction = 'umap', label = FALSE, repel = TRUE, label.size = 2.5, na.value = element_blank(),
+                        pt.size = 1, group.by = "antigen", order = c("RF,Ro60,Ro52,La", "RF,Ro60,La", "RF,Ro60","Ro60,Ro52,La", "Ro60,Ro52","Ro60,La","Ro52,La","La","Ro60","Ro52","RF","NA"), cols = c("grey","hotpink","purple","darkblue","cyan" ,"green","yellow","orange","red", "darkgreen", "brown", "darkcyan"))
+umap_group <- DimPlot(combined_subset, reduction = 'umap', label = FALSE, repel = TRUE, label.size = 2.5, group.by = "group", pt.size = 1, order = c("RF","ANA", "NA"), cols = c("grey",  "red", "blue"))
+
+combined_subset@meta.data$antigen[combined_subset@meta.data$antigen == "NA"] <- NA
+combined_subset@meta.data$group[combined_subset@meta.data$group == "NA"] <- NA
+
+umap_reactivity <-  DimPlot(combined_subset, reduction = 'umap', label = T, repel = TRUE, label.size = 2.5, group.by = "reactivity", pt.size = 1, order = T) + NoLegend()
+
+
+features_rna <- FeaturePlot(combined_subset, features = c("rna_CD2", "rna_CD4", "rna_CD8A", "rna_CD19", "rna_NCAM1", "rna_ITGAX"), reduction = "umap", cols = c("lightgrey", "darkblue"), order = T) + NoLegend()
+features_rna.2 <- FeaturePlot(combined_subset, features = c("rna_CD83", "rna_IGHD", "rna_CD19", "rna_MZB1", "rna_CD79A", "rna_BCL6", "rna_CD27", "rna_IGHM", "rna_IGHG1"), reduction = "umap", cols = c("lightgrey", "darkblue"), order = T) + NoLegend()
+DefaultAssay(combined_subset) <- "CITE"
+features_cite <- FeaturePlot(combined_subset, features = c("CD3-UCHT1", "CD4-RPA.T4", "CD8", "CD19", "CD56", "CD11c"), order = T, reduction = "umap", cols = c("lightgrey", "darkgreen"), slot = "data")
+DefaultAssay(combined_subset) <- "RNA"
+
+
+features_gc <- FeaturePlot(combined_subset, features = c("CCR7", "IGHD", "NOTCH2", "CD24", "CXCR4", "CXCR5", "rna_CD27", "MKI67", "LMO2", "IGHM", "IGHG1", "ITGAX", "AICDA", "BCL6"), order = T)
+
+umap
+umap_ident
+umap_donor
+umap_antigen
+umap_group
+umap_tissue
+umap_reactivity
+features_rna
+features_rna.2
+features_cite
+features_gc
+```
+
+```{r Visualise donor contribution}
+#Which clusters consists of which donors?
+donor_cols <- distinctColorPalette(k = length(unique(combined_subset$donor)))
+ggplot(combined_subset@meta.data, aes(x = integrated_snn_res.0.7,  fill = donor)) + geom_bar(position = "fill") + coord_flip() + scale_fill_manual(values = donor_cols) + xlab("cluster") + ylab("fraction")
+```
+
+```{r Visualise tissue contribution}
+#which tissue?
+ggplot(combined_subset@meta.data, aes(x = integrated_snn_res.0.7,  fill = tissue)) + geom_bar(position = "fill") + coord_flip()  + xlab("cluster") + ylab("fraction")
+```
+
+```{Marker analysis}
+#Marker analysis
+combined_markers <- FindAllMarkers(combined_subset, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "MAST", slot = "data", assay = "RNA")
+
+fullpanel <- subset(combined_subset, orig.ident %in% c("sjogren", "tonsilpaper")) #only grab cells with an extensive panel
+fullpanel <- subset(fullpanel, donor %in% c("B005", "B007", "D001","D002"), invert = T)
+
+fullpanel <- ScaleData(fullpanel, features = rownames(fullpanel[["CITE"]]), assay = "CITE", verbose = FALSE)
+combined_markers.cite <- FindAllMarkers(fullpanel, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "MAST", slot = "data", assay = "CITE")
+
+#Filter based on p value:
+combined_markers <- subset(combined_markers, combined_markers$p_val_adj <= 0.05)
+
+combined_markers <- combined_markers[order(combined_markers$cluster , -combined_markers$avg_log2FC),]
+
+top_15_markers_per_cluster_negpos <-combined_markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 15, order_by = avg_log2FC)
+
+top_15_markers_per_cluster <-combined_markers %>%
+  group_by(cluster) %>%
+  subset(avg_log2FC > 0) %>%
+  slice_max(n = 15, order_by = avg_log2FC)
+
+combined_markers.cite <- subset(combined_markers.cite, combined_markers.cite$p_val_adj <= 0.05)
+
+combined_markers.cite <- combined_markers.cite[order(combined_markers.cite$cluster , -combined_markers.cite$avg_log2FC),]
+
+top_15_markers_per_cluster.cite <-combined_markers.cite %>%
+  group_by(cluster) %>%
+  slice_max(n = 15, order_by = abs(avg_log2FC))
+
+write.csv(combined_markers, "/home/sidneyz/sjogren_results/tonsilintegration_subset_v1.4b_RNA_markers.csv")
+write.csv(combined_markers.cite, "/home/sidneyz/sjogren_results/tonsilintegration_subset_v1.4b_CITE_markers.csv")
+```
+
+```{r Read in results}
+#Read in the marker genes if found earlier:
+combined_markers <- read.csv("/home/sidneyz/sjogren_results/tonsilintegration_subset_v1.4b_RNA_markers.csv")
+combined_markers.cite <- read.csv("/home/sidneyz/sjogren_results/tonsilintegration_subset_v1.4b_CITE_markers.csv")
+combined_markers$X <- NULL
+combined_markers.cite$X <- NULL
+```
+
+```{r Azimuth}
+#Azimuth
+DefaultAssay(combined_subset) <- "RNA"
+combined_subset <- RunAzimuth(combined_subset, reference = "tonsilref")
+DefaultAssay(combined_subset) <- "integrated"
+
+random_col_100 <- distinctColorPalette(k=100)
+
+prediction_umap.l1 <- DimPlot(combined_subset, reduction = "umap", label = F, size = 1, group.by = "predicted.celltype.l1", cols = annot_cols.2, repel = T) 
+prediction_score_umap.l1 <- FeaturePlot(combined_subset, features = ("predicted.celltype.l1.score")) 
+prediction_umap.l2 <- DimPlot(combined_subset, reduction = "umap", label = T, size = 1, group.by = "predicted.celltype.l2", cols = random_col_100, repel = T) + NoLegend()
+prediction_score_umap.l2 <- FeaturePlot(combined_subset, features = ("predicted.celltype.l2.score")) 
+
+prediction_umap.l1
+prediction_score_umap.l1 + scale_color_viridis(option = "inferno", direction = -1, begin = 0, end = 1)
+
+prediction_umap.l2
+prediction_score_umap.l2 + scale_color_viridis(option = "inferno", direction = -1, begin = 0, end = 1)
+```
+
+```{r GO annotation per cluster}
+#GO annotation
+combinedmarkers.pos <- subset(combined_markers, avg_log2FC > 0)
+combinedmarkers.neg <- subset(combined_markers, avg_log2FC < 0)
+
+combinedmarkers.pos$annotation <- combinedmarkers.pos$cluster
+combinedmarkers.neg$annotation <- combinedmarkers.neg$cluster
+
+
+combinedmarkers.pos$gene[combinedmarkers.pos$gene == "FAM129C"] <- "NIBAN2" #change a gene alias that just will not convert
+combinedmarkers.neg$gene[combinedmarkers.neg$gene == "FAM129C"] <- "NIBAN2" #change a gene alias that just will not convert
+
+#Annotation using the sjogren package
+output.pos <- sjogren::annotate_clusters(combinedmarkers.pos)
+output.neg <- sjogren::annotate_clusters(combinedmarkers.neg)
+
+#Plot the results
+dotplot(output.pos[["GO"]], showCategory=2, title= "EnrichGO analysis of the Seurat clusters (positive markers)")  + theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 0.5))
+dotplot(output.pos[["KEGG"]], showCategory=2, title= "KEGG analysis of the Seurat clusters (positive markers)") + theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 0.5))
+
+dotplot(output.neg[["GO"]], showCategory=2, title= "EnrichGO analysis of the Seurat clusters (negative markers)") + theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 0.5))
+dotplot(output.neg[["KEGG"]], showCategory=2, title= "KEGG analysis of the Seurat clusters (negative markers)") + theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 0.5))
+```
+
+```{r Plot the cell cycle}
+#Cell cycle plot
+umap_cellcycle <- DimPlot(combined_subset, reduction = 'umap', label =F, repel = TRUE, label.size = 3, group.by = "Phase") 
+umap_cellcycle
+```
+
+```{r Plot previous annotations}
+#Show previous annotations
+umap_origannot <- DimPlot(combined_subset, reduction = 'umap', label =F, repel = TRUE, label.size = 3, group.by = "annotation", cols = annot_cols) 
+umap_origannot
+```
+
+```{r Add cluster annotation}
+#Annotate the clusters
+annotation <-  c("Activated NBC", "Resting NBC", "LZ", "MBC", "GC-commited NBC", "Hist-high Sphase DZ",
+                 "Hist-high G2M phase DZ", "PC","non-proli GC", "Sphase DZ", "Sphase DZ", "CD27+ AICDA+ DZ",
+                 "G2M phase DZ", "SG MBC", "CD83+ BCL2A1+ LZ", "LZ entry", "Hist-high Sphase DZ",
+                 "FCRL4+ MBC", "IFN-stim NBC", "circulating APC", "PC", "CCL4+ CCL5+ PC")
+
+names(annotation) <- levels(combined_subset)
+combined_subset <- RenameIdents(combined_subset, annotation)
+
+#Add the cluster identity to the metadata
+combined_subset@meta.data$cell_barcode <- rownames(combined_subset@meta.data)
+seurat_clusters <- combined_subset@meta.data[,c("cell_barcode", "seurat_clusters")]
+annotation.df <- as.data.frame(annotation)
+colnames(annotation.df) <- "annotation_integrated"
+annotation.df$seurat_clusters <- rownames(annotation.df)
+annotation.df <- inner_join(seurat_clusters, annotation.df , by = "seurat_clusters")
+rownames(annotation.df) <- annotation.df$cell_barcode
+annotation.df$cell_barcode <- NULL
+annotation.df$seurat_clusters <- NULL
+combined_subset <- AddMetaData(combined_subset, annotation.df)
+```
+
+```{r DO NOT RUN}
+#only run if you want to change the seurat levels back to their original cluster number
+#to change the annotation back to the cluster numbers:
+cluster_annotation <- c(0:(length(levels(combined_subset))-1))
+names(cluster_annotation) <- levels(combined_subset)
+combined_subset <- RenameIdents(combined_subset, cluster_annotation)
+combined_subset@meta.data$annotation <- NULL
+```
+
+```{r Plot annotation}
+umap_annotation <- DimPlot(combined_subset, reduction = 'umap', label = TRUE, repel = TRUE, label.size = 4, cols = annot_cols.2, group.by = "annotation_integrated") 
+umap_annotation
+saveRDS(umap_annotation, "/home/sidneyz/sjogren_results/UMAP_tonsil_annotated.RDS")
+```
+
+```{r Trace back germinal centre cells}
+#Where are the gc cells?
+gc_cells <- rownames(combined_subset@meta.data[!is.na(combined_subset@meta.data$annotation_gc),]) #subset GC cells
+
+#Count in which tonsil clusters they are
+gc <- subset(combined_subset, cells = gc_cells)
+test <- gc@meta.data %>%
+  group_by(annotation_gc, annotation_integrated) %>%
+  dplyr::count()
+
+#Make a plot of the result
+plot_gc <- ggplot(test, aes(x=annotation_gc, y = n, fill = annotation_integrated)) + geom_col(position = "dodge",  colour = "black") + theme_bw() +
+  xlab("original GC annotation") + ylab("number of cells") + scale_fill_manual(values = distinctColorPalette(k = length(unique(test$annotation_integrated)))) + theme(panel.grid.major.x = element_blank(),panel.border = element_blank(),  axis.line = element_line(colour = "black"), text = element_text(size = 20))
+
+saveRDS(plot_gc, "/home/sidneyz/sjogren_results/gc_mapping_tonsil.RDS")
+```
+
+```{r Make a heatmap of DEGs per cluster}
+#heatmap per cluster:
+top_5_markers_per_cluster <-combined_markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 5, order_by = abs(avg_log2FC))
+
+clust_cols <- distinctColorPalette(k=length(unique(combined_subset@meta.data$annotation_integrated)))
+sce <- as.SingleCellExperiment(combined_subset)
+celltype_mean <- scuttle::aggregateAcrossCells(sce, ids = sce$annotation_integrated, statistics = "mean",
+                                               use.assay.type = 'scaledata')
+
+
+
+colors=colorRampPalette(c("lightblue2","white", "red"))(50)
+dittoSeq::dittoHeatmap(celltype_mean, genes = unique(top_5_markers_per_cluster$gene),  annot.by = c("annotation_integrated"),
+                       fontsize=7,heatmap.colors = colors,
+                       use_raster=T,cluster_cols =T,breaks=seq(-2,2,length.out=50),
+                       slot = 'scale.data',show_colnames = T,
+                       treeheight_row = 20, treeheight_col=20)
+```
+
+```{r Plot expression of germinal centre gene modules}
+#plot the expression of gene modules
+
+#Read in gene sets
+germinal_genesets <- read_xlsx("/home/sidneyz/sjogren_data/germinalpaper_genesets.xlsx")
+germinal_genesets <- germinal_genesets[c(-1),]
+
+#Formatting
+dz_a <- germinal_genesets$`DZ-a UP`
+dz_b <- germinal_genesets$`DZ-b UP`
+dz_c <- germinal_genesets$`DZ-c UP`
+int_a <- germinal_genesets$`INT-a UP`
+int_b <- germinal_genesets$`INT-b UP`
+int_c <- germinal_genesets$`INT-c UP`
+int_d <- germinal_genesets$`INT-d UP`
+int_e <- germinal_genesets$`INT-e UP`
+LZ_a <- germinal_genesets$`LZ-a UP`
+LZ_b <- germinal_genesets$`LZ-b UP`
+prem <- germinal_genesets$`PreM UP`
+pbl_a <- germinal_genesets$`PBL-a UP`
+pbl_b <- germinal_genesets$`PBL-b UP`
+
+germinal_genesets_list <- list(dz_a,dz_b,dz_c,int_a,int_b,int_c,int_d,int_e,LZ_a,LZ_b,prem,pbl_a,pbl_b)
+
+for (i in seq_along(germinal_genesets_list)){
+  germinal_genesets_list[[i]] <- germinal_genesets_list[[i]][!is.na(germinal_genesets_list[[i]])]
+}
+names(germinal_genesets_list) <- c("DZ_a", "DZ_b", "DZ_c", "INT_a", "INT_b", "INT_c", "INT_d", "INT_e", "LZ_a", "LZ_b", "PreM", "PBL_a", "PBL_b")
+
+#Add a module score for each gene set
+suppressWarnings(combined_subset <- AddModuleScore(
+  object = combined_subset,
+  features = germinal_genesets_list,
+  ctrl = 100,
+  name = c("DZ_a", "DZ_b", "DZ_c", "INT_a", "INT_b", "INT_c", "INT_d", "INT_e", "LZ_a", "LZ_b", "PreM", "PBL_a", "PBL_b"),
+  assay = "RNA"
+))
+
+#Rename the resulting columns
+combined_subset@meta.data <- combined_subset@meta.data %>%
+  rename("DZ_a" = "DZ_a1", "DZ_b" = "DZ_b2", "DZ_c" = "DZ_c3",
+         "INT_a" = "INT_a4", "INT_b" = "INT_b5", "INT_c" = "INT_c6", "INT_d" = "INT_d7", "INT_e" = "INT_e8",
+         "LZ_a" = "LZ_a9", "LZ_b" = "LZ_b10", "PreM" = "PreM11", "PBL_a" = "PBL_a12", "PBL_b" = "PBL_b13")
+
+#Plot the result
+germinal_plot <- FeaturePlot(combined_subset, features =c("DZ_a", "DZ_b", "DZ_c", "INT_a", 
+                                                          "INT_b", "INT_c", "INT_d", "INT_e", 
+                                                          "LZ_a", "LZ_b", "PreM", "PBL_a", "PBL_b"), reduction = "umap",
+                             combine = FALSE, order = T)
+color_scale <- scale_color_gradientn(colours = viridis_pal()(9), limits = c(-1,1))
+germinal_plot <- lapply(germinal_plot, function(x) x + color_scale)
+germinal_plot <- wrap_plots(germinal_plot)
+germinal_plot
+```
+
+```{r Plot specific gene modules}
+#Do the same as above, but now use a hand-picked list of gene modules.
+#modules
+markers <- data.frame(gene = c("IGHG1", "IGHA1", "IGHM", "IGHD", "CD27", "CD38", "XBP1", "MZB1", "PRDM1", "CXCR5", "CXCR4", "CXCR3", "CCR7", "GPR183", "ID3", "BACH2", "MEF2B", "FOXO1",
+                               "IL21R", "BCL6", "AICDA", "CD72", "E2F1", "CDK1", "CDC20", "MKI67", "PCNA", "STMN1", "HMGN2", "HHEX", "CCR6", "BCL2", "SKI", "TLE3", 
+                               "LYN", "SYK", "BTK", "BLNK", "SLAMF1", "LY75", "CD80", "HLA-DQA1", "MYD88", "TLR7" ,"TLR9", "RELB", "NFKB1", "NFKBID", "MTOR", "RIPK1", "TYK2", "JAK2" , "MAP3K14", "STAT4", "NR4A2"),
+                      annotation = c("identity", "identity", "identity", "identity","identity","identity", "plasma cell","plasma cell","plasma cell", "location","location","location","location","location","location",
+                                     "germinal center","germinal center","germinal center","germinal center","germinal center","germinal center","germinal center","germinal center",
+                                     "proliferation","proliferation","proliferation","proliferation","proliferation","proliferation", "memory B cell","memory B cell","memory B cell","memory B cell","memory B cell",
+                                     "BCR activation", "BCR activation","BCR activation","BCR activation", "co-stimulation", "co-stimulation","co-stimulation","co-stimulation","co-stimulation","co-stimulation","co-stimulation",
+                                     "inflammatory signalling","inflammatory signalling","inflammatory signalling","inflammatory signalling","inflammatory signalling","inflammatory signalling","inflammatory signalling","inflammatory signalling","inflammatory signalling","inflammatory signalling"))
+
+
+#Make a separate list entry for each annotation
+modules <- split(markers$gene, f = markers$annotation, drop = T)
+
+#Add the module score
+combined_subset <- AddModuleScore(
+  object = combined_subset,
+  features = modules,
+  ctrl = 100,
+  name = names(modules),
+  assay = "RNA"
+)
+
+#Rename the resulting columns
+combined_subset@meta.data <- combined_subset@meta.data %>%
+  rename("BCR_activation" = "BCR.activation1", "co_simulation" = "co.stimulation2", "germinal_center" = "germinal.center3",
+         "identity" = "identity4", "inflammatory_signalling" = "inflammatory.signalling5", "location" = "location6",
+         "memory_B" = "memory.B.cell7",  "plasma_cell" = "plasma.cell8", "proliferation" = "proliferation9")
+
+
+#Plot the module scores
+module_plot <- FeaturePlot(combined_subset, features = c("BCR_activation", "co_stimulation","germinal_center",
+                                                         "identity", "inflammatory_signalling", "location", "memory_B",
+                                                         "plasma_cell", "proliferation"), reduction = "umap", order = T, combine = F)
+color_scale <- scale_color_gradientn(colours = viridis_pal()(9), limits = c(-1,1))
+module_plot <- lapply(module_plot, function(x) x + color_scale)
+module_plot <- wrap_plots(module_plot)
+module_plot
+```
+
+```{r scRepertoire clonality plot}
+#Clonality
+colorblind_vector <- colorRampPalette(rev(c("#0D0887FF", "#47039FFF", 
+                                            "#7301A8FF", "#9C179EFF", "#BD3786FF", "#D8576BFF",
+                                            "#ED7953FF","#FA9E3BFF", "#FDC926FF", "#F0F921FF")))
+
+#Visualise the expansion of the clonotypes onto the UMAP
+clono_plot <- DimPlot(combined_subset, group.by = "cloneType", reduction = "umap") +
+  scale_color_manual(values = colorblind_vector(5), na.value="grey") + 
+  theme(plot.title = element_blank())
+
+clono_plot
+```
+
+```{r Dotplot between autoreactive and healthy per cluster}
+#Compare autoreactive to sjogren to healthy
+combined_subset@meta.data$condition[combined_subset@meta.data$orig.ident == "germinal_b"] <- "HC"
+
+#Add an annotation:
+combined_subset@meta.data$HC_pSS_group <- NA
+combined_subset@meta.data$HC_pSS_group[combined_subset@meta.data$group == "RF"] <- "RF"
+combined_subset@meta.data$HC_pSS_group[combined_subset@meta.data$group == "ANA"] <- "ANA"
+combined_subset@meta.data$HC_pSS_group[is.na(combined_subset@meta.data$group) & combined_subset@meta.data$condition == "pSS"] <- "pSS"
+combined_subset@meta.data$HC_pSS_group[is.na(combined_subset@meta.data$group) & combined_subset@meta.data$condition == "HC"] <- "HC"
+
+
+#Dotplotting
+combined_subset@meta.data$dotplot <- paste0(combined_subset@meta.data$annotation_integrated, "_", combined_subset@meta.data$HC_pSS_group)
+
+markers <- data.frame(gene = c("IGHG1", "IGHA1", "IGHM", "IGHD", "CD27", "CD38", "XBP1", "MZB1", "PRDM1", "CXCR5", "CXCR4", "CXCR3", "CCR7", "GPR183", "ID3", "BACH2", "MEF2B", "FOXO1",
+                               "IL21R", "BCL6", "AICDA", "CD72", "E2F1", "CDK1", "CDC20", "MKI67", "PCNA", "STMN1", "HMGN2", "HHEX", "CCR6", "BCL2", "SKI", "TLE3", 
+                               "LYN", "SYK", "BTK", "BLNK", "SLAMF1", "LY75", "CD80", "HLA-DQA1", "MYD88", "TLR7" ,"TLR9", "RELB", "NFKB1", "NFKBID", "MTOR", "RIPK1", "TYK2", "JAK2" , "MAP3K14", "STAT4", "NR4A2"),
+                      annotation = c("identity", "identity", "identity", "identity","identity","identity", "plasma cell","plasma cell","plasma cell", "location","location","location","location","location","location",
+                                     "germinal center","germinal center","germinal center","germinal center","germinal center","germinal center","germinal center","germinal center",
+                                     "proliferation","proliferation","proliferation","proliferation","proliferation","proliferation", "memory B cell","memory B cell","memory B cell","memory B cell","memory B cell",
+                                     "BCR activation", "BCR activation","BCR activation","BCR activation", "co-stimulation", "co-stimulation","co-stimulation","co-stimulation","co-stimulation","co-stimulation","co-stimulation",
+                                     "inflammatory signalling","inflammatory signalling","inflammatory signalling","inflammatory signalling","inflammatory signalling","inflammatory signalling","inflammatory signalling","inflammatory signalling","inflammatory signalling","inflammatory signalling"))
+
+
+
+#check for expression of genes from Rogier
+group_order <- unique(markers$annotation)
+sizes <- markers %>%
+  group_by(annotation) %>%
+  dplyr::count() %>%
+  ungroup()
+
+sizes <- sizes[order(match(sizes$annotation,group_order)),]
+
+#Add group sizes
+group_sizes <- combined_subset@meta.data %>%
+  group_by(dotplot) %>%
+  dplyr::count()
+
+combined_group_sizes <- combined_subset@meta.data[,c("cell_barcode", "dotplot")]
+combined_group_sizes <- inner_join(combined_group_sizes, group_sizes, by = "dotplot")
+combined_group_sizes$dotplot <- paste0(combined_group_sizes$dotplot, " (", combined_group_sizes$n, ")")
+combined_subset@meta.data$dotplot <- combined_group_sizes$dotplot
+
+library(randomcoloR)
+cols <- distinctColorPalette(nrow(sizes))
+DefaultAssay(combined_subset) <- "RNA"
+dotplot <- SCpubr::do_DotPlot(combined_subset, assay = "RNA", features = markers$gene, 
+                              group.by = "dotplot", rotate_x_axis_labels = 90,
+                              legend.position = "right")  + theme(axis.text.x = element_text(hjust = 1))+ coord_flip() 
+
+segment <- data.frame(group = sizes$annotation, 
+                      start = c(0, 6.5, 9.5, 15.5, 23.5, 29.5, 34.5, 38.5, 45.5), 
+                      finish = c(6.5, 9.5, 15.5, 23.5, 29.5, 34.5, 38.5, 45.5, 56), 
+                      y = c(0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,0.5))
+
+dotplot + geom_segment(data = segment, aes(x = start, y = y, xend = finish, yend = y, linewidth = 0.25, colour = group))  +
+  scale_colour_manual(values = cols, breaks = group_order) + guides(color=guide_legend(title="gene process", ncol = 3)) #+ coord_cartesian(clip = "off")
+```
+
+```{r DEGs sjogren compared to healthy per cluster}
+#sjogren vs healthy per cluster
+combined_subset@meta.data$dotplot <- paste0(combined_subset@meta.data$annotation_integrated, "_", combined_subset@meta.data$HC_pSS_group)
+
+Idents(combined_subset) <- combined_subset@meta.data$dotplot
+marker_list_all <- list()
+
+for (i in annotation){
+  cluster_sjogren <- paste0(i, "_", "pSS")
+  cluster_healthy <- paste0(i, "_", "HC")
+  next_one <- F
+  
+  tryCatch({pSS_vs_HC <- FindMarkers(combined_subset, ident.1 = cluster_sjogren, ident.2 = cluster_healthy,
+                                     min.pct = 0.25, logfc.threshold = 0.25, test.use = "MAST", slot = "data", assay = "RNA")}, error = function(e){next_one <<- T})
+  
+  if(next_one == T){
+    next
+  }
+  
+  pSS_vs_HC <- pSS_vs_HC[pSS_vs_HC$p_val_adj <= 0.05,]
+  pSS_vs_HC$cluster <- i
+  pSS_vs_HC$gene <- rownames(pSS_vs_HC)
+  
+  marker_list_all[[length(marker_list_all) +1]] <- pSS_vs_HC
+  names(marker_list_all)[[length(marker_list_all)]] <- i
+}
+
+marker_all <- rbindlist(marker_list_all)
+
+
+marker_all <- marker_all[marker_all$p_val_adj <= 0.05,]
+marker_all <- marker_all[order(marker_all$cluster , -marker_all$avg_log2FC),]
+marker_all <- marker_all %>%
+  group_by(cluster) %>%
+  filter(!duplicated(gene))
+
+top_15_markers_per_cluster_all <- marker_all %>%
+  group_by(cluster) %>%
+  slice_max(n = 15, order_by = abs(avg_log2FC))
+```
+
+```{r GO analysis}
+#Remove immunoglobulin genes from DEGs
+marker_all_noimmuno <- marker_all[!grepl("^IGKC|^IGLC|^IGKV|^IGLV|^IGH" ,marker_all$gene),]
+
+#Split into positive and negative markers
+marker_all_noimmuno.pos <- marker_all_noimmuno[marker_all_noimmuno$avg_log2FC > 0,]
+marker_all_noimmuno.neg <- marker_all_noimmuno[marker_all_noimmuno$avg_log2FC < 0,]
+
+marker_vec.pos <- unique(marker_all_noimmuno.pos$gene)
+marker_vec.neg <- unique(marker_all_noimmuno.neg$gene)
+
+#GO analysis
+marker_vec.pos_go <- enrichGO(marker_vec.pos, ont = "BP", OrgDb = "org.Hs.eg.db", keyType = "SYMBOL", pvalueCutoff = 0.05, pAdjustMethod = "BH")
+marker_vec.neg_go <- enrichGO(marker_vec.neg, ont = "BP", OrgDb = "org.Hs.eg.db", keyType = "SYMBOL", pvalueCutoff = 0.05, pAdjustMethod = "BH")
+
+#Plot the result
+dotplot(marker_vec.pos_go) + ggtitle("GO terms of genes upregulated in Sjogrens vs healthy controls")
+dotplot(marker_vec.neg_go) + ggtitle("GO terms of genes downregulated in Sjogrens vs healthy controls")
+```
+
+```{r Volcano plot}
+#Make a volcano plot of the DEGs per cluster
+plot <- sjogren::volcano(marker_list = marker_list_all, display_n = 10)
+cowplot::plot_grid(plotlist = plot)
+```
+
+```{r Visualise tissue contribution}
+tissue_bar <- ggplot(combined_subset@meta.data, aes(x = annotation_integrated,  fill = tissue)) + geom_bar(position = "fill") + coord_flip()  + xlab("cluster") + ylab("fraction") + scale_fill_brewer(palette = "Set1")
+tissue_bar
+```
+
+```{r DEGs GC cells and their cluster}
+#Compare GC cells to the cluster they map to
+combined_subset@meta.data$comparison <- paste0(combined_subset@meta.data$annotation_gc, "_", combined_subset@meta.data$annotation_integrated)
+Idents(combined_subset) <- combined_subset@meta.data$comparison
+
+#Perform for CD27+ AICDA+ cluster
+Mem <- FindMarkers(combined_subset, ident.1 = "non-proli_DZ_CD27+ AICDA+ DZ", ident.2 = "NA_CD27+ AICDA+ DZ", assay = "RNA", slot = "data", logfc.threshold = 0.25,
+                   test.use = "MAST", min.pct = 0.25)
+
+Mem <- Mem[Mem$p_val_adj <= 0.05,]
+
+#Perform for LZ cells
+LZ_entry <- FindMarkers(combined_subset, ident.1 = "LZ_LZ entry", ident.2 = "NA_LZ entry", assay = "RNA", slot = "data", logfc.threshold = 0.25,
+                        test.use = "MAST", min.pct = 0.25)
+LZ_entry <- LZ_entry[LZ_entry$p_val_adj <= 0.05,]
+```
+
+```{r Assess MKI and AICDA expression}
+#MKI67/AICDA analysis
+features.mki67_aicda <- FeaturePlot(combined_subset, features = c("rna_MKI67", "rna_AICDA"), reduction = "umap", cols = c("lightgrey", "darkblue"), order = T) + NoLegend()
+
+features.mki67_aicda
+average <- AverageExpression(combined_subset, assays = "RNA", features = c("MKI67", "AICDA"), group.by = "ident")
+average <- as.data.frame(average[[1]])
+average <- as.data.frame(t(average))
+average$cluster <- rownames(average)
+
+
+average <- average[rep(seq_len(nrow(average)), each = 2), ]
+average$gene <- rep(c("MKI67", "AICDA"), times = nrow(average)/2)
+odd_rows <- seq_len(nrow(average)) %%2
+average$expression <- NA
+average$expression[odd_rows == 1] <- average$MKI67[odd_rows == 1]
+average$expression[odd_rows == 0] <- average$AICDA[odd_rows == 0]
+average$annotation <- gsub("_IGHM|_IGHG|_IGHA|_IGHD|_RF|_ANA", "", average$cluster)
+average$group <- stringr::word(average$cluster,2, sep = "_")
+
+
+ggplot(average, aes(x=cluster, y = expression, fill = gene)) + geom_col(position = "dodge") + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + ylab("average expression") +
+  guides(fill=guide_legend(title="cluster")) + xlab("group")
+
+combined_gc_subset <- subset(combined_subset, subset = (rna_MKI67 > 0 & rna_AICDA > 0))
+combined_mki_subset <- subset(combined_subset, subset = rna_MKI67 > 0 )
+
+ggplot(test, aes(x = annotation_integrated, y = n, fill = donor)) + geom_col(position = "dodge")  + scale_fill_brewer(palette = "Set2") + xlab("cluster") + ylab("cells")
+ggplot(combined_mki_subset@meta.data, aes(x = annotation_integrated,  fill = donor)) + geom_bar(position = "stack")  + scale_fill_brewer(palette = "Set2") + xlab("cluster") + ylab("cells")
+
+test <- combined_gc_subset@meta.data %>%
+  group_by(annotation_integrated, donor, antigen) %>%
+  dplyr::count()
+
+test <- combined_mki_subset@meta.data %>%
+  group_by(annotation_integrated, donor, antigen) %>%
+  dplyr::count()
+```
+
+```{r Plot of autoreactive cells per tissue per cluster}
+#Cluster per tissue
+b_clusters <- combined_subset@meta.data %>%
+  group_by(tissue, annotation_integrated, group) %>%
+  filter(!is.na(group)) %>%
+  dplyr::count()
+
+ggplot(b_clusters, aes(x = annotation_integrated, y = n, fill = group)) + geom_col(stat = "identity", position = "dodge") +
+  theme_bw() +  theme(panel.grid.major.x = element_blank(),panel.border = element_blank(), axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("Cluster") + ylab("Count") + scale_y_continuous(expand=c(0,0), limits = c(0,250)) + facet_grid(~tissue) +
+  ggtitle("Raw counts of the autoreactive cells in each cluster (all donors)") + guides(fill=guide_legend(title="antigenicity"))
+```
+
+```{r Compare SjS and healthy LN/tonsil MBCs to all other clusters}
+#tonsil vs ln mbc
+combined_subset_clusters <- subset(combined_subset, annotation_integrated %in% c("IFN-stim NBC", "MBC", "FCRL4+ MBC"))
+combined_subset_clusters <- subset(combined_subset_clusters, annotation %in% c("FCRL4+ MBC",  "IGHG+/IGHA+ MBC", "IGHA+ MBC", NA))
+combined_subset_clusters <- subset(combined_subset_clusters, tissue %in% c("Lymph node",  "Tonsil"))
+
+
+combined_subset_clusters@meta.data$compare_annot <- paste0(combined_subset_clusters@meta.data$tissue, "_", combined_subset_clusters@meta.data$annotation_integrated)
+Idents(combined_subset_clusters) <- combined_subset_clusters@meta.data$compare_annot
+markers <- FindAllMarkers(combined_subset_clusters, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "MAST", slot = "data", assay = "RNA")
+markers <- markers[markers$p_val_adj <= 0.05,]
+
+top_15_markers_per_cluster<- markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 15, order_by = avg_log2FC)
+
+marker_list <- list
+```
+
+```{r Compare lymph node MBC to tonsil MBC}
+annotations_test <- c("IFN-stim NBC", "MBC", "FCRL4+ MBC")
+for (i in annotations_test){
+  ln_cluster <- paste0("Lymph node_", i)
+  tonsil_cluster <- paste0("Tonsil_", i)
+  
+  markers <- FindMarkers(combined_subset_clusters, ident.1 = ln_cluster, ident.2 = tonsil_cluster, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "MAST", slot = "data", assay = "RNA")
+  markers$gene <- rownames(markers)
+  
+  markers <- markers[markers$p_val_adj <= 0.05,]
+  
+  
+  marker_list[[length(marker_list)+1]] <- markers
+  names(marker_list)[[length(marker_list)]] <- i
+}
+
+marker.df <- rbindlist(marker_list, use.names = T, idcol = names(marker_list))
+colnames(marker.df) <- c("cluster", "p_val", "avg_log2FC", "pct.1", "pct.2", "p_val_adj", "gene")
+marker.df <- marker.df[order(marker.df$cluster , -abs(marker.df$avg_log2FC)),]
+
+top_15_markers_per_cluster<- marker.df %>%
+  group_by(cluster) %>%
+  slice_max(n = 15, order_by = avg_log2FC)
+```
+
+```{r Session information}
+sessioInfo()
+```

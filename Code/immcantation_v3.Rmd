@@ -1,0 +1,1041 @@
+---
+Title: "Immcantation pipeline for SjS-derived B cells"
+Author: Sidney van der Zande
+Date: 22-06-2023
+---
+
+#The Immcantation pipeline (v 4.4.0)
+##Version 3: B005 and B007 replicates are now included, but they are separate runs.
+
+This script is meant to run the Immcantation pipeline on cellranger contigs. The Immcantation pipeline is a framework for phylogenetic and selection pressure analyses on B cell clonotypes (although it can be adapted for T cells as well). The manual for Immcantation can be found here: https://immcantation.readthedocs.io/en/stable/
+I found this tutorial helpful for the processing of 10X data, and it also describes most of the Linux functions: https://changeo.readthedocs.io/en/stable/examples/10x.html
+
+This script is set up in two parts, depending on what you can run:
+The first part is the standard R pipeline for processing of cellranger contigs. I could not run the final step of this part, where you generate the phylogenetic trees, due to missing dependencies in my docker container.
+Therefore, for phylogenetic tree making, I used the Linux-based pipeline instead. This will also produce phylogenetic trees, which can be processed with the second part of this script.
+Both should give the same output.
+
+*author note: should you ever run into the 'cannot establish connection' error when trying to save or open a file, paste that line into the terminal and run it from there.*
+
+```{r Load in libraries}
+#Load libraries
+suppressMessages(library(alakazam))
+suppressMessages(library(data.table))
+suppressMessages(library(dowser))
+suppressMessages(library(dplyr))
+suppressMessages(library(ggplot2))
+suppressMessages(library(scoper))
+suppressMessages(library(shazam))
+suppressMessages(library(tigger))
+suppressMessages(library(igraph))
+suppressMessages(library(ape))
+suppressMessages(library(ggbreak))
+suppressMessages(library(randomcoloR))
+suppressMessages(library(Seurat))
+suppressMessages(library(yaml))
+suppressMessages(library(phylobase))
+suppressMessages(library(ggtree))
+suppressMessages(library(grid))
+suppressMessages(library(patchwork))
+suppressMessages(library(ggplotify))
+suppressMessages(library(randomcoloR))
+
+```
+
+To work with the cellranger-generated aligned FASTQ files for this analysis, they first need to be aligned to a BCR reference (IMGT) and converted to an AIRR format. Therefore, the functions *AssignGenes.py* and *ParseDb.py* need to be run in Linux first. Those outputs can be sued in the functions below.
+
+```{r Read in data}
+# read in the data and assign metavariables
+data1 <- readChangeoDb('/home/sidneyz/results_withB00/D001/filtered_contig_igblast_db-pass.tsv')
+data1$donor <- "D001"
+data1$tissue <- "Lymph node"
+data1$ident <- "D001"
+
+
+data2 <- readChangeoDb('/home/sidneyz/results_withB00/D002/filtered_contig_igblast_db-pass.tsv')
+data2$donor <- "D002"
+data2$tissue <- "Lymph node"
+data2$ident <- "D002"
+
+data3 <- readChangeoDb('/home/sidneyz/results_withB00/D003/filtered_contig_igblast_db-pass.tsv')
+data3$donor <- "D003"
+data3$tissue <- "Lymph node"
+data3$ident <- "D003"
+
+
+data4ln <- readChangeoDb('/home/sidneyz/results_withB00/D004LN/filtered_contig_igblast_db-pass.tsv')
+data4ln$donor <- "D004"
+data4ln$tissue <- "Lymph node"
+data4ln$ident <- "D004LN"
+
+
+data4pg <- readChangeoDb('/home/sidneyz/results_withB00/D004PG/filtered_contig_igblast_db-pass.tsv')
+data4pg$donor <- "D004"
+data4pg$tissue <- "Salivary gland"
+data4pg$ident <- "D004PG"
+
+
+data7 <- readChangeoDb('/home/sidneyz/results_withB00/D007/filtered_contig_igblast_db-pass.tsv')
+data7$donor <- "D007"
+data7$tissue <- "Salivary gland"
+data7$ident <- "D007"
+
+datab005_1 <- readChangeoDb('/home/sidneyz/results_withB00/B005-1/filtered_contig_igblast_db-pass.tsv')
+datab005_1$donor <- "B005"
+datab005_1$tissue <- "Salivary gland"
+datab005_1$ident <- "B005-1"
+
+datab005_2 <- readChangeoDb('/home/sidneyz/results_withB00/B005-2/filtered_contig_igblast_db-pass.tsv')
+datab005_2$donor <- "B005"
+datab005_2$tissue <- "Salivary gland"
+datab005_2$ident <- "B005-2"
+
+datab007_1 <- readChangeoDb('/home/sidneyz/results_withB00/B007-1/filtered_contig_igblast_db-pass.tsv')
+datab007_1$donor <- "B007"
+datab007_1$tissue <- "Lymph node"
+datab007_1$ident <- "B007-1"
+
+datab007_2 <- readChangeoDb('/home/sidneyz/results_withB00/B007-2/filtered_contig_igblast_db-pass.tsv')
+datab007_2$donor <- "B007"
+datab007_2$tissue <- "Lymph node"
+datab007_2$ident <- "B007-2"
+
+#Merge D004 data:
+data4 <- rbind(data4ln, data4pg)
+
+#Merge B005 data:
+datab005 <- rbind(datab005_1, datab005_2)
+
+#Merge B007 data:
+datab007 <- rbind(datab007_1, datab007_2)
+
+
+#AIM is not included as it contains data from different donors, meaning that it should not form clonotype trees between donors
+
+```
+
+To assign cluster identities to your B cells later on, you will need a seurat object which holds these annotations. You can specify which seurat object you want to use here.
+
+```{r Assign seurat object}
+seurat <- seurat_combined_subset
+```
+
+The IMGT alignment aligns BCR genes to a reference to determine which allele they are. However, it sometimes happens that a donor has a very specific allele that is not in the IMGT database. TIgGER is a programme that can find these donor-specific alleles and make sure that they are annotated as such. TIgGER documentation can be found here: https://tigger.readthedocs.io/en/stable/
+
+```{r TIgGER}
+#TIgGER: infer personal germline alleles
+#Read in the reference alignment
+references <- readIMGT(dir = "/home/sidneyz/immcantation_suite/usr/local/share/germlines/imgt/human/vdj")
+
+#Get the contigs into a list
+data_list <- list(data1, data2, data3, data4, data7, datab005, datab007)
+names(data_list) <- c("D001", "D002", "D003", "D004", "D007", "B005", "B007")
+
+
+novel_list <- list()
+
+#Find potential new alleles for each entry in the list
+for(i in seq_along(data_list)){
+  suppressMessages(novel <- findNovelAlleles(data_list[[i]], references, nproc=40))
+  closeAllConnections()
+  novel_list[[length(novel_list)+1]] <- novel
+  names(novel_list)[[length(novel_list)]] <- names(data_list)[[i]]
+}
+
+novel_rows <- data.frame()
+
+#Find the rows corresponding to those new alleles
+for (i in seq_along(novel_list)){
+  index <- which(!is.na(novel_list[[i]]$polymorphism_call))
+  novel_row <- novel_list[[i]][index,]
+  
+  if (nrow(novel_row) == 0 ){
+    next
+  }
+  novel_row$donor <- names(novel_list)[[i]]
+  novel_rows <- rbind(novel_rows, novel_row)
+}
+rm(novel, novel_row, i, index)
+
+```
+You can now check the result of novel_rows to see if you find any new germline alleles. If you do, you can run the script below to examine the new allele and possibly add it to your personalised reference.
+
+
+```{r Check TIgGER result}
+#Plot the result of the polymorphism check in D003
+plotNovel(data3, novel_list[[3]][2, ])
+
+#Infer the new genotype
+geno <- inferGenotype(data3, germline_db=references, novel=novel_list[[3]],
+                      find_unmutated=TRUE)
+
+# Save the genotype sequences to a vector
+genotype_db <- genotypeFasta(geno, references, novel_list[[3]])
+# Visualize the genotype and sequence counts
+print(geno)
+
+plotGenotype(geno, text_size = 10)
+
+#Update the data object with the correct allele calls
+sample_db <- reassignAlleles(AIRRDb, genotype_db)
+```
+
+We now continue on to the rest of the script, where we try to determine clonotypes and make phylogenetic trees.
+
+```{r Filter out cells with dual IGH or no IGH}
+#Filter out cells with dual IGH chains or no IGH chain
+data_list <- list(data1, data2, data3, data4ln, data4pg, data7, datab005_1, datab005_2, datab007_1, datab007_2)
+names <- c("D001", "D002", "D003", "D004LN", "D004PG", "D007", "B005_1", "B005_2", "B007_1", "B007_2")
+
+
+filtering_AIRR <- function(data){
+  data <- data[data$productive == TRUE,]
+  
+  # remove cells with multiple heavy chain
+  multi_heavy <- table(filter(data, locus == "IGH")$cell_id)
+  multi_heavy_cells <- names(multi_heavy)[multi_heavy > 1] #find cells with more than one heavy chain
+  
+  print(paste0(length(multi_heavy_cells), " cells with multiple heavy chains have been removed"))
+  
+  data <- filter(data, !cell_id %in% multi_heavy_cells) #remove dual IGH chains
+  
+  # split cells by heavy and light chains
+  heavy_cells <- filter(data, locus == "IGH")$cell_id
+  light_cells <- filter(data, locus == "IGK" | locus == "IGL")$cell_id
+  no_heavy_cells <- light_cells[which(!light_cells %in% heavy_cells)] #remove cells with no heavy chain
+  
+  print(paste0(length(no_heavy_cells), " cells with no heavy chains have been removed"))
+  
+  
+  data <- filter(data, !cell_id %in% no_heavy_cells)
+  return(data)
+}
+
+#Apply the function to each data frame
+for (i in seq_along(data_list)){
+  data_list[[i]] <- filtering_AIRR(data_list[[i]])
+}
+names(data_list) <- names
+
+rm(i, names)
+```
+
+```{r Add isotype}
+#add the isotype
+for (i in seq_along(data_list)){
+  data_list[[i]]$isotype <- NA
+  
+  for (j in 1:nrow(data_list[[i]])){
+    row <- as.data.frame(data_list[[i]][j,])
+    if (grepl("^IGH",row["c_call"])){  #if the gene is IGH, the isotype is the gene name minus the H (for example, IGHM becomes IGM)
+      row$isotype <- gsub("H", "", row$c_call)
+    } else {
+      row$isotype <- NA
+    }
+  data_list[[i]][j,] <- row
+  }
+}
+```
+
+```{r Make larger dataframe}
+data_merged <- rbindlist(data_list)
+```
+
+```{r Add autoreactivity}
+#Make a cell barcode
+data_merged$barcode <- paste0(data_merged$ident, "_", gsub("-1", "", data_merged$cell_id)) #make a barcode for each cell from the donor and sequence id
+
+#Read in what the autoreactive cells are
+autoreactive_cells <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/alldonors_mathijs_threshold2_0405_annotated_seuratmeta.csv")
+autoreactive_cells$X <- NULL
+colnames(autoreactive_cells) <- c("barcode","clonotype_new", "reactivity", "antigen")
+autoreactive_cells$antigen[autoreactive_cells$clonotype_new == "5903"] <- "RF" #set D007 clone to RF
+autoreactive_cells$reactivity[autoreactive_cells$clonotype_new == "5903"] <- "unknown-RF" #set D007 clone to RF
+
+#Add in a group
+autoreactive_cells$group <- NA
+autoreactive_cells$group[grepl("RF",autoreactive_cells$antigen)] <- "RF"
+autoreactive_cells$group[!is.na(autoreactive_cells$antigen) & is.na(autoreactive_cells$group)] <- "ANA"
+
+data_merged <- left_join(data_merged, autoreactive_cells, by = "barcode")
+```
+
+```{r Examine isotype usage and autoreactivity}
+#add combined isotypes (e.g. combine all IGHG isotypes)
+data_merged$isotype_combine <- NA
+data_merged$isotype_combine[data_merged$isotype == "IGM"] <- "IgM"
+data_merged$isotype_combine[data_merged$isotype == "IGD"] <- "IgD"
+data_merged$isotype_combine[data_merged$isotype %in% c("IGG1", "IGG2", "IGG3", "IGG4")] <- "IgG"
+data_merged$isotype_combine[data_merged$isotype %in% c("IGA1", "IGA2")] <- "IgA"
+
+
+isotype <- data_merged %>%
+  group_by(group, c_call) %>%
+  filter(!is.na(c_call) & !grepl("IGLC|IGKC|TR", c_call)) %>%
+  dplyr::count()
+
+isotype$group[is.na(isotype$group)] <- "none"
+
+isotype_plot <- ggplot(isotype, aes(x = group, y = n, fill = c_call)) +
+  geom_bar(stat = "identity", position = "dodge", colour = "black", linewidth = 0.2) + theme_bw() +  theme(panel.grid.major.x = element_blank(),panel.border = element_blank(),  axis.line = element_line(colour = "black"), axis.text.x=element_text(angle = -90, hjust = 0), text = element_text(size = 20)) +
+  xlab("Antigen reactivity") + ylab("Isotype count") + scale_y_continuous(expand=c(0,0), limits = c(0, 7500)) + scale_fill_manual(values = distinctColorPalette(k = length(unique(isotype$c_call))))
+```
+
+```{r Plot with only autoreactive cells}
+#only taking autoreactive cells
+isotype <- data_merged %>%
+  subset(donor != "D007") %>%
+  group_by(donor, antigen, isotype) %>%
+  filter(!is.na(isotype)) %>%
+  filter(!is.na(antigen)) %>%
+  dplyr::count()
+
+isotype$donor[isotype$donor == "All"] <- "Combined PBMC"
+
+ggplot(isotype, aes(x = antigen, y = n, fill = isotype)) +
+  geom_bar(stat = "identity", position = "stack") + theme_bw() +  theme(panel.grid.major.x = element_blank(),panel.border = element_blank(),  axis.line = element_line(colour = "black"), axis.text.x=element_text(angle = -90, hjust = 0)) +
+  xlab("Antigen reactivity") + ylab("Isotype count") + scale_y_continuous(expand=c(0,0) , limits = c(0,90)) + ggtitle("Isotype usage per antigen specificity") #+
+  #facet_grid(~donor)
+```
+
+
+```{r Examine the variable chain gene usage}
+#IGHV gene usage
+ighv_total <- data_merged %>%
+  separate_rows(v_call,sep = ',') %>% #if a v_call is ambiguous, all entries are counted as separate entries
+  group_by(group, v_call) %>%
+  filter(!is.na(group)) %>%
+  dplyr::count() %>%
+  group_by(group) %>%
+  mutate(total = sum(n)) %>%
+  mutate(percentage = (n/total)*100)
+
+
+colors = c("orange", "darkcyan")
+
+
+for (i in 1:nrow(ighv_total)){
+  row <- ighv_total[ighv_total$v_call == ighv_total$v_call[[i]],]
+  
+  if (!("RF" %in% row$group)){
+    row_fill <- row
+    row_fill$group <- "RF"
+    row_fill$n <- NA
+    ighv_total <- rbind(ighv_total, row_fill)
+  }
+  if (!("ANA" %in% row$group)){
+    row_fill <- row
+    row_fill$group <- "ANA"
+    row_fill$n <- NA
+    ighv_total <- rbind(ighv_total, row_fill)
+  }
+}
+
+ighv_total.sub <- subset(ighv_total, ighv_total$n >= 5)
+ighv_total.sub <- ighv_total[ighv_total$v_call %in% ighv_total.sub$v_call,]
+
+ighv_total.sub <- ighv_total.sub[order(-ighv_total.sub$n),]
+
+#count
+ighv_plot <- ggplot(ighv_total.sub, aes(x=reorder(v_call, -n), y = n, fill = group)) + geom_col(position = position_dodge(0.5), width = 0.35) +
+  theme_bw() +  theme(panel.grid.major.x = element_blank(),  axis.line = element_line(colour = "black"), axis.text.x=element_text(angle = 90, hjust = 0, vjust = 0.25), text = element_text(size = 20)) +
+  xlab("Variable gene call") + ylab("Count") + scale_y_continuous(expand=c(0,0), limits = c(0,950)) +
+   guides(fill=guide_legend(title="antigenicity")) + scale_fill_manual(values = colors)
+
+
+#percentage
+ggplot(ighv_total.sub, aes(x=reorder(v_call, -percentage), y = percentage, fill = factor(antigen, levels = c("none","RF", "La", "Ro52", "Ro52,La", "Ro60,Ro52", "Ro60", "Ro60,La", "Ro60,RF")))) + geom_col(position = position_dodge(0.5), width = 0.35) +
+  theme_bw() +  theme(panel.grid.major.x = element_blank(),  axis.line = element_line(colour = "black"), axis.text.x=element_text(angle = 90, hjust = 0, vjust = 0.20)) +
+  xlab("IGHV gene call") + ylab("Percentage of IGHV counts (per antigen)") + scale_y_continuous(expand=c(0,0), limits = c(0,100)) +
+  ggtitle("IGHV gene usage in autoreactive and non-autoreactive cells") + guides(fill=guide_legend(title="antigen")) #+ scale_fill_manual(values = colors)
+
+```
+
+```{r Find clonal distance thresholds}
+# find threshold for cloning automatically, for each dataset, factoring in the other subjects
+
+#First, calculate distances to each other sequence of the same donor
+dist_list <- list()
+for (i in seq_along(data_list)){
+  dist_nearest <- distToNearest(filter(data_list[[i]], locus == "IGH"), nproc = 40)
+  dist_list[[length(dist_list)+1]] <- dist_nearest
+  names(dist_list)[[length(dist_list)]] <- names(data_list)[[i]]
+  closeAllConnections()
+  print(paste0("Completed list object number ", i))
+}
+
+#Then, calculate distances to sequences of other donors
+dist_nearest_cross <- distToNearest(filter(data_merged, locus == "IGH"), nproc = 40, cross = "donor")
+closeAllConnections()
+
+threshold_list <- list()
+threshold_vector <- c()
+plot_list <- list()
+
+#Find the optimal distance threshold using a Gaussian Mixture Model
+for (i in seq_along(dist_list)){
+  threshold_output <- findThreshold(dist_list[[i]]$dist_nearest,
+                                    method = "gmm", model = "gamma-norm",
+                                    cutoff = "user", spc = 0.995, cross = dist_nearest_cross$cross_dist_nearest)
+  threshold_list[[length(threshold_list)+1]] <- threshold_output
+  names(threshold_list)[[length(threshold_list)]] <- names(dist_list)[[i]]
+  
+  threshold <- threshold_output@threshold
+  threshold_vector <- c(threshold_vector, threshold)
+  
+  plot <- plot(threshold_output, binwidth = 0.02,
+               cross = dist_nearest_cross$cross_dist_nearest, silent = T) +
+    theme(axis.title = element_text(size = 18), plot.title = element_text(size = 22)) + ggtitle(names(dist_list)[[i]])
+  
+  plot_list[[length(plot_list)+1]] <- plot
+  names(plot_list)[[length(plot_list)]] <- names(plot_list)[[i]]
+  print(paste0("Completed list object number ", i))
+  closeAllConnections()
+}
+
+#save the output
+saveRDS(threshold_list, "/home/sidneyz/sjogren_results/own_data/combined/immcantation_thresholds_withB00.rds")
+
+threshold_list <- readRDS("/home/sidneyz/sjogren_results/own_data/combined/immcantation_thresholds_withB00.rds")
+
+#visually inspect the chosen thresholds
+cowplot::plot_grid(plotlist = plot_list)
+```
+
+```{r Set the threshold vector}
+#Set the threshold vector according to the outputs
+threshold_vector <- c("B005_1"= 0.1218112, "B005_2" = 0.15117497, "B007_1" = 0.1218112, "B007_2" = 0.15117497, "D001" = 0.20240509, "D002"= 0.16324952, "D003"= 0.15483926, "D004LN"= 0.16417743, "D004PG"= 0.27283692, "D007"= 0.04651345)
+```
+
+##R pipeline
+You now have the distance thresholds at which a cell is considered a clonotype. This can be used as input to the *DefineClones.py* script of the Change-O Linux pipeline, after which the rest of the pipeline can be run entirely within Linux. If you wish to continue with the R pipeline, or if you wish to do selection pressure analyses wise BASEline, then continue on with the R code below.
+
+
+```{r Make clonotypes using clustering}
+# call clones using hierarchicalClones
+results_list <- list()
+for (i in seq_along(data_list)){
+  results <- suppressMessages(hierarchicalClones(data_list[[i]], cell_id = 'cell_id', method = "nt", linkage = "complete",
+                                threshold = threshold_vector[[i]], only_heavy = FALSE,
+                                split_light = TRUE, summarize_clones = FALSE, nproc = 20, max_n = 2)) #grouping based on IGH and IGK/L, splitting of IGL and IGK groups
+  results_list[[length(results_list)+1]] <- results
+  names(results_list)[[length(results_list)]] <- names(data_list)[[i]]
+  print(paste0("Completed list object number ", i))
+  closeAllConnections()
+}
+
+saveRDS(results_list, "/home/sidneyz/sjogren_results/own_data/combined/immcantation_clonotyping_withB00.rds")
+results_list <- readRDS("/home/sidneyz/sjogren_results/own_data/combined/immcantation_clonotyping_withB00.rds")
+```
+
+```{r Align to germline reference and calculate mutation scores, include = FALSE}
+# run createGermlines using IMGT files in Docker container.
+references <- readIMGT(dir = "/home/sidneyz/immcantation_suite/usr/local/share/germlines/imgt/human/vdj")
+references.info <- read_yaml(file = "/home/sidneyz/immcantation_suite/usr/local/share/germlines/imgt/IMGT.yaml")
+
+baseline_list <-list()
+data_h_list <- list()
+collapse_list <- list()
+
+for (i in seq_along(results_list)){
+  results <- results_list[[i]]
+  results <- createGermlines(results, references, nproc = 20)
+  h <- filter(results, locus=="IGH")
+  
+  #store the heavy chain, light chain K and light chain L information separately
+  h <- createGermlines(filter(results, locus == "IGH"), references, nproc = 20)
+  k <- createGermlines(filter(results, locus == "IGK"), references, nproc = 20)
+  l <- createGermlines(filter(results, locus == "IGL"), references, nproc = 20)
+  
+  # calculate observed and expected SHM frequency in the heavy chain V gene
+  data_h <- observedMutations(h,
+                              sequenceColumn = "sequence_alignment",
+                              germlineColumn = "germline_alignment_d_mask",
+                              regionDefinition = IMGT_V,
+                              frequency = TRUE,
+                              combine = TRUE,
+                              nproc = 20)
+  
+  data_h_list[[length(data_h_list)+1]] <- data_h
+  names(data_h_list)[[length(data_h_list)]] <- names(results_list)[[i]]
+  
+  data_h_expected <- expectedMutations(data_h, 
+                                       sequenceColumn="sequence_alignment",
+                                       germlineColumn="germline_alignment_d_mask",
+                                       targetingModel=HH_S5F,
+                                       regionDefinition=IMGT_V, nproc=20)
+  
+  #Group clones together, since it is only useful to calculate selection pressure for clones
+  collapse <- collapseClones(data_h_expected, cloneColumn = "clone_id", sequenceColumn="sequence_alignment",
+                             germlineColumn="germline_alignment_d_mask", regionDefinition = IMGT_V, muFreqColumn = "mu_freq",
+                             includeAmbiguous = TRUE, breakTiesStochastic = FALSE, method = "mostCommon", nproc = 20, expandedDb = T)
+  
+  collapse_list[[length(collapse_list)+1]] <- collapse
+  names(collapse_list)[[length(collapse_list)]] <- names(results_list)[[i]]
+  
+  #Calculate the selection scores using BASELINe
+  baseline <- calcBaseline(collapse, testStatistic="focused", sequenceColumn="sequence_alignment",
+                           germlineColumn="germline_alignment_d_mask",
+                           regionDefinition=IMGT_V, nproc=20)
+  
+  baseline_list[[length(baseline_list)+1]] <- baseline
+  names(baseline_list)[[length(baseline_list)]] <- names(results_list)[[i]]
+  print(paste0("Completed: object ", i))
+  closeAllConnections()
+}
+
+rm(h,k,l,references, references.info,collapse, baseline, data_h,results)
+
+#Save the result
+saveRDS(baseline_list, "/home/sidneyz/sjogren_results/own_data/combined/baseline_withB00.rds")
+saveRDS(data_h_list, "/home/sidneyz/sjogren_results/own_data/combined/data_h_withB00.rds")
+saveRDS(collapse_list, "/home/sidneyz/sjogren_results/own_data/combined/collapseclones_withB00.rds")
+
+```
+
+```{r Load in results}
+#If you already have the results generated in the chunk above, you can load them here:
+data_h_list <- readRDS("/home/sidneyz/sjogren_results/own_data/combined/data_h_withB00.rds")
+baseline_list <- readRDS("/home/sidneyz/sjogren_results/own_data/combined/baseline_withB00.rds")
+collapse_list <- readRDS("/home/sidneyz/sjogren_results/own_data/combined/collapseclones_withB00.rds")
+```
+
+```{r Calculate mutation frequencies}
+# calculate the median mutation frequency of a clone
+freq_list <- list()
+
+for (i in seq_along(data_h_list)){
+  mut_freq_clone <- data_h_list[[i]] %>%
+    group_by(clone_id) %>%
+    summarise(median_mut_freq = mean(mu_freq))
+  
+  freq_list[[i]] <- mut_freq_clone
+  names(freq_list)[[i]] <- names(data_h_list)[[i]]
+}
+
+
+mut_freq_clone.df <- rbindlist(freq_list, idcol= names(freq_list))
+colnames(mut_freq_clone.df) <- c("donor", "clone_id", "median_mut_freq")
+
+```
+
+```{r Add missing data to BASEline object}
+#Add reactivities in if not done already:
+data_D001 <- as.data.frame(subset(data_merged, ident == "D001"))
+data_D001 <- data_D001[c("sequence_id", "group")]
+
+data_D002 <- as.data.frame(subset(data_merged, ident == "D002"))
+data_D002 <- data_D002[c("sequence_id", "group")]
+
+data_D003 <- as.data.frame(subset(data_merged, ident == "D003"))
+data_D003 <- data_D003[c("sequence_id", "group")]
+
+data_D004LN <- as.data.frame(subset(data_merged, ident == "D004LN"))
+data_D004LN <- data_D004LN[c("sequence_id",  "group")]
+
+data_D004PG <- as.data.frame(subset(data_merged, ident == "D004PG"))
+data_D004PG <- data_D004PG[c("sequence_id", "group")]
+
+data_D007 <- as.data.frame(subset(data_merged, ident == "D007"))
+data_D007 <- data_D007[c("sequence_id", "group")]
+
+data_B0051 <- as.data.frame(subset(data_merged, ident == "B005-1"))
+data_B0051 <- data_B0051[c("sequence_id",  "group")]
+
+data_B0052 <- as.data.frame(subset(data_merged, ident == "B005-2"))
+data_B0052 <- data_B0052[c("sequence_id","group")]
+
+data_B0071 <- as.data.frame(subset(data_merged, ident == "B007-1"))
+data_B0071 <- data_B0071[c("sequence_id","group")]
+
+data_B0072 <- as.data.frame(subset(data_merged, ident == "B007-2"))
+data_B0072 <- data_B0072[c("sequence_id", "group")]
+
+baseline_list[["D001"]]@db <- left_join(baseline_list[["D001"]]@db, data_D001, by = "sequence_id")
+baseline_list[["D002"]]@db <- left_join(baseline_list[["D002"]]@db, data_D002, by = "sequence_id")
+baseline_list[["D003"]]@db <- left_join(baseline_list[["D003"]]@db, data_D003, by = "sequence_id")
+baseline_list[["D004LN"]]@db <- left_join(baseline_list[["D004LN"]]@db, data_D004LN, by = "sequence_id")
+baseline_list[["D004PG"]]@db <- left_join(baseline_list[["D004PG"]]@db, data_D004PG, by = "sequence_id")
+baseline_list[["D007"]]@db <- left_join(baseline_list[["D007"]]@db, data_D007, by = "sequence_id")
+baseline_list[["B005_1"]]@db <- left_join(baseline_list[["B005_1"]]@db, data_B0051, by = "sequence_id")
+baseline_list[["B005_2"]]@db <- left_join(baseline_list[["B005_2"]]@db, data_B0052, by = "sequence_id")
+baseline_list[["B007_1"]]@db <- left_join(baseline_list[["B007_1"]]@db, data_B0071, by = "sequence_id")
+baseline_list[["B007_2"]]@db <- left_join(baseline_list[["B007_2"]]@db, data_B0072, by = "sequence_id")
+
+#add combined isotypes if missing
+for (i in seq_along(baseline_list)){
+  baseline_list[[i]]@db$isotype_combine <- NA
+  baseline_list[[i]]@db$isotype_combine[baseline_list[[i]]@db$c_call == "IGHM"] <- "IGHM"
+  baseline_list[[i]]@db$isotype_combine[baseline_list[[i]]@db$c_call == "IGHD"] <- "IGHD"
+  baseline_list[[i]]@db$isotype_combine[baseline_list[[i]]@db$c_call %in% c("IGHG1", "IGHG2", "IGHG3", "IGHG4")] <- "IGHG"
+  baseline_list[[i]]@db$isotype_combine[baseline_list[[i]]@db$c_call %in% c("IGHA1", "IGHA2")] <- "IGHA"
+  
+}
+
+#Set non-autoreactive groups to "none"
+for (i in seq_along(baseline_list)){
+  baseline_list[[i]]@db$group[is.na(baseline_list[[i]]@db$group)] <- "none"
+}
+```
+
+```{r Summarize BASELine result}
+baseline_sum <- list()
+baseline_group <- list()
+for (i in seq_along(baseline_list)){
+  baseline_group[[i]] <- groupBaseline(baseline_list[[i]], groupBy = "group", nproc = 20) #summarize result by autoreactive group
+  names(baseline_group)[[i]] <- names(baseline_list)[[i]]
+  closeAllConnections()
+}
+
+isotype_colors <- c("IGHM"="darkorchid", "IGHD"="firebrick", 
+                    "IGHG"="seagreen", "IGHA"="steelblue")
+
+antigen_colors <- c("RF" = "darkgreen", "ANA" = "red", "none" = "black")
+
+group_plot <- list()
+for(i in seq_along(baseline_group)){
+  plot <- plotBaselineSummary(baseline_group[[i]], groupColors=antigen_colors, idColumn = "group", silent = T) + ggtitle(as.character(names(baseline_group)[[i]])) + theme(text = element_text(size = 20))
+  group_plot[[i]] <- plot
+}
+
+
+selection_plot <- cowplot::plot_grid(plotlist = group_plot)
+selection_plot <- selection_plot + theme(text = element_text(size = 20))
+selection_plot
+```
+
+```{r Phylogenetic trees in R}
+#I could not run this section due to missing dependencies.
+#make a phylogenetic tree using IgPhyML
+clones_list <- list()
+trees_list <- list()
+for (i in seq_along(data_h_list)){
+  clones <- formatClones(data_h_list[[i]],
+                         traits = "c_call",
+                         minseq = 3)
+  print(clones)
+  clones_list[[length(clones_list)+1]] <- clones
+  names(clones_list)[[length(clones_list)]] <- names(data_h_list)[[i]]
+  
+  trees <- getTrees(clones,
+                    build = "igphyml", nproc = 20, exec = "/home/sidneyz/immcantation_suite/usr/local/share/igphyml/src/igphyml")
+  
+  trees_list[[length(trees_list)+1]] <- clones
+  names(trees_list)[[length(trees_list)]] <- names(data_h_list)[[i]]
+  
+}
+
+
+p <- plotTrees(trees, tips = "c_call", tipsize = 4)
+
+# plot first tree
+p[[1]]
+
+# save all trees to a pdf
+treesToPDF(p, file = "results/alltrees.pdf")
+```
+
+```{r Read in trees from Linux script}
+#Alternative: read in tree generated from linux script
+#using ape
+db1 <- readIgphyml("/home/sidneyz/results_withB00//D001/D001_igphyml-pass.tab", format = "phylo")
+db2 <- readIgphyml("/home/sidneyz/results_withB00/D002/D002_igphyml-pass.tab", format = "phylo")
+db3 <- readIgphyml("/home/sidneyz/results_withB00/D003/D003_igphyml-pass.tab", format = "phylo")
+db4ln <- readIgphyml("/home/sidneyz/results_withB00/D004LN/D004LN_igphyml-pass.tab", format = "phylo")
+db4pg <- readIgphyml("/home/sidneyz/results_withB00/D004PG/D004PG_igphyml-pass.tab", format = "phylo")
+db7 <- readIgphyml("/home/sidneyz/results_withB00/D007/D007_igphyml-pass.tab", format = "phylo")
+db0051 <- readIgphyml("/home/sidneyz/results_withB00/B005-1/B005-1_igphyml-pass.tab", format = "phylo")
+db0052 <- readIgphyml("/home/sidneyz/results_withB00/B005-2/B005-2_igphyml-pass.tab", format = "phylo")
+db0071 <- readIgphyml("/home/sidneyz/results_withB00/B007-1/B007-1_igphyml-pass.tab", format = "phylo")
+db0072 <- readIgphyml("/home/sidneyz/results_withB00/B007-2/B007-2_igphyml-pass.tab", format = "phylo")
+
+list <- list(db1,db2,db3,db4ln,db4pg,db7,db0051,db0052,db0071,db0072)
+names(list) <- c("D001", "D002", "D003", "D004LN", "D004PG", "D007", "B005_1", "B005_2", "B007_1", "B007_2")
+
+for (i in seq_along(list)){
+  print(paste0(names(list)[[i]], ": ", length(list[[i]][["trees"]]), " clones found."))
+}
+```
+
+```{r Make a list of all cells in tree}
+#Function to get all the barcode labels out for each tree
+extract_tree_sequences <- function(db){
+  output_list <- list()
+  for (i in seq_along(db[["trees"]])){
+    sequences <- db[["trees"]][[i]]$tip.label
+    
+    sequences <- sequences[!grepl("GERM", sequences)] #remove germline sequences
+    
+    output_list[[length(output_list)+1]] <- sequences
+    names(output_list)[[i]] <- names(db[["trees"]])[[i]]
+  }
+    return(output_list)
+}
+
+db1_seq <- extract_tree_sequences(db1)
+db2_seq <- extract_tree_sequences(db2)
+db3_seq <- extract_tree_sequences(db3)
+db4ln_seq <- extract_tree_sequences(db4ln)
+db4pg_seq <- extract_tree_sequences(db4pg)
+db7_seq <- extract_tree_sequences(db7)
+db0051_seq <- extract_tree_sequences(db0051)
+db0052_seq <- extract_tree_sequences(db0052)
+db0071_seq <- extract_tree_sequences(db0071)
+db0072_seq <- extract_tree_sequences(db0072)
+
+```
+
+```{r Find trees with autoreactive cells}
+#Remove non-autoreactive enttries
+autoreactive_cells <- autoreactive_cells[!is.na(autoreactive_cells$antigen),]
+
+#Write a function to check if the sequences in each tree are autoreactive or not
+find_autoreactive_clones <- function(db_seq, donor, data_merged, autoreactive_cells, seurat){
+  results <- list()
+  data_merged$barcode <- paste0(data_merged$ident, "_", gsub("-1", "", data_merged$cell_id)) #make a barcode for each cell from the donor and sequence id
+  
+  if (!("annotation" %in% colnames(seurat@meta.data))){
+    stop("Annotation column is missing.")
+  }
+  
+  cluster_ident <- data.frame(barcode = rownames(seurat@meta.data), cluster = seurat@meta.data$annotation)
+
+  #subset the AIRR object based on the donor
+  if (donor == "D001"){
+    data <- data_merged[data_merged$ident == "D001",]
+  } else if (donor == "D002"){
+    data <- data_merged[data_merged$ident == "D002",]
+  } else if (donor == "D003"){
+    data <- data_merged[data_merged$ident == "D003",]
+  } else if (donor == "D004LN"){
+    data <- data_merged[data_merged$ident == "D004LN",]
+  } else if (donor == "D004PG"){
+    data <- data_merged[data_merged$ident == "D004PG",]
+  } else if (donor == "D007") {
+    data <- data_merged[data_merged$ident == "D007",]
+  } else if (donor == "B005-1") {
+    data <- data_merged[data_merged$ident == "B005-1",]
+  } else if (donor == "B005-2") {
+    data <- data_merged[data_merged$ident == "B005-2",]
+  } else if (donor == "B007-1") {
+    data <- data_merged[data_merged$ident == "B007-1",]
+  } else if (donor == "B007-2") {
+    data <- data_merged[data_merged$ident == "B007-2",]
+  } else {
+    print("No entries found for that donor.")
+  }
+  
+  
+  for (i in seq_along(db_seq)){ #for each tree
+    check_list <- list()
+    sequences <- db_seq[[i]] #get the sequences out
+    indexes <- which(data$sequence_id %in% sequences) #get the index numbers out of the sequences in the AIRR object
+    
+    barcodes <- data$barcode[indexes] #grab the corresponding barcodes
+    
+    result_pertree <- data.table
+    
+    for (j in barcodes){ #for each barcode
+      index_bar <- which(barcodes %in% j)
+      seq_index <- indexes[[index_bar]]
+
+      check <- autoreactive_cells[autoreactive_cells$barcode %in% j,] #check if it occurs in the list of autoreactive cells
+      
+      if (nrow(check) > 0){
+        check$sequence_id <- data$sequence_id[seq_index]
+        check_list[[length(check_list)+1]] <- check #if the barcode does appear in the list of autoreactive cells, add it to the output
+        
+      } else{
+        next #if the barcode does not appear, go to the next sequence
+      }
+      
+    }
+    output <- rbindlist(check_list)
+    
+    if (nrow(output) == 0) { #if none of the sequences are autoreactive, skip the tree
+      next
+    }
+    
+    #take cluster identities from seurat object
+    output <- left_join(output, cluster_ident, by = "barcode")
+    
+    results[[length(results)+1]] <- output
+    names(results)[[length(results)]] <- names(db_seq)[[i]]
+  }
+  
+  
+  
+  return(results)
+}
+
+#Get the autoreactive sequences for each tree (if any)
+auto_1 <- find_autoreactive_clones(db1_seq, "D001", data_merged, autoreactive_cells = autoreactive_cells, seurat_combined_subset)
+auto_1 <- rbindlist(auto_1, idcol = "tree")
+auto_1$donor <- "D001"
+
+auto_2 <- find_autoreactive_clones(db2_seq, "D002", data_merged, autoreactive_cells, seurat_combined_subset)
+auto_2 <- rbindlist(auto_2, idcol = "tree")
+auto_2$donor <- "D002"
+
+auto_3 <- find_autoreactive_clones(db3_seq, "D003", data_merged, autoreactive_cells, seurat_combined_subset)
+auto_3 <- rbindlist(auto_3, idcol = "tree")
+auto_3$donor <- "D003"
+
+auto_4ln <- find_autoreactive_clones(db4ln_seq, "D004LN", data_merged, autoreactive_cells, seurat_combined_subset)
+auto_4ln <- rbindlist(auto_4ln, idcol = "tree")
+auto_4ln$donor <- "D004LN"
+
+auto_4pg <- find_autoreactive_clones(db4pg_seq, "D004PG", data_merged, autoreactive_cells, seurat_combined_subset)
+auto_4pg <- rbindlist(auto_4pg, idcol = "tree")
+auto_4pg$donor <- "D004PG"
+
+auto_7 <- find_autoreactive_clones(db7_seq, "D007", data_merged, autoreactive_cells, seurat_combined_subset)
+auto_7 <- rbindlist(auto_7, idcol = "tree")
+auto_7$donor <- "D007"
+
+auto_b0051 <- find_autoreactive_clones(db0051_seq, "B005-1", data_merged, autoreactive_cells, seurat_combined_subset)
+auto_b0051 <- rbindlist(auto_b0051, idcol = "tree")
+auto_b0051$donor <- "B005-1"
+
+auto_b0052 <- find_autoreactive_clones(db0052_seq, "B005-2", data_merged, autoreactive_cells, seurat_combined_subset)
+auto_b0052 <- rbindlist(auto_b0052, idcol = "tree")
+auto_b0052$donor <- "B005-2"
+
+auto_b0071 <- find_autoreactive_clones(db0071_seq, "B007-1", data_merged, autoreactive_cells, seurat_combined_subset)
+auto_b0071 <- rbindlist(auto_b0071, idcol = "tree")
+auto_b0071$donor <- "B007-1"
+
+auto_b0072 <- find_autoreactive_clones(db0072_seq, "B007-2", data_merged, autoreactive_cells, seurat_combined_subset)
+auto_b0072 <- rbindlist(auto_b0072, idcol = "tree")
+auto_b0072$donor <- "B007-2"
+
+auto <- rbind(auto_1, auto_2, auto_3, auto_4ln, auto_4pg, auto_7, auto_b0051, auto_b0052, auto_b0071, auto_b0072)
+
+#find the trees that have the most autoreactive sequences in them
+auto_test <- auto %>%
+  group_by(tree, donor) %>%
+  dplyr::count() %>%
+  arrange(desc(n))
+```
+
+```{r Plot phylogenetic trees}
+#Plot the trees with annotation
+phylo_tree <- function(tree_number, seurat = NULL, ident, annotation = T){
+  
+  if (annotation = T & is.null(seurat)){
+    stop("A Seurat object needs to be defined for tree annotation. If you do not need cluster annotations in your tree, then set annotation to FALSE.")
+  }
+  
+  grid.newpage()
+  
+  
+  if (ident == "D001"){
+    tree_object <- db1
+    auto <- auto_1
+  } else if (ident == "D002"){
+    tree_object <- db2
+    auto <- auto_2
+  } else if (ident == "D003"){
+    tree_object <- db3
+    auto <- auto_3
+  } else if (ident == "D004LN"){
+    tree_object <- db4ln
+    auto <- auto_4ln
+  } else if (ident == "D004PG"){
+    tree_object <- db4pg
+    auto <- auto_4pg
+  } else if (ident == "D007"){
+    tree_object <- db7
+    auto <- auto_7
+  } else if (ident == "B005-1"){
+    tree_object <- db0051
+    auto <- auto_b0051
+  } else if (ident == "B005-2"){
+    tree_object <- db0052
+    auto <- auto_b0052
+  } else if (ident == "B007-1"){
+    tree_object <- db0071
+    auto <- auto_b0071
+  } else if (ident == "B007-2"){
+    tree_object <- db0072
+    auto <- auto_b0072
+  } else{
+    stop("Donor not found.")
+  }
+  
+  if (!(tree_number %in% names(tree_object$trees))){
+    stop("Tree number not found for this donor.")
+  }
+  
+  tree <- tree_object$trees[[as.character(tree_number)]]
+  tree <- as(tree, "phylo4")
+  
+  data <- as.data.frame(tree@label)
+  colnames(data) <- c("sequence_id")
+  
+  if (tree_number %in% auto$tree){
+    auto <- auto[order(match(auto$sequence_id, data$sequence_id)),]
+    
+    
+    data <- left_join(data, auto, by = "sequence_id")
+    data <- data[order(match(data$sequence_id, tree@label)),]
+    
+    col <- seq(1:nrow(data))
+    
+    for (i in 1:nrow(data)){
+      if (!is.na(data[i,c("antigen")])){
+        if (grepl("RF", data[i,c("antigen")])){
+          col[i] <- "darkgreen"
+        } else if (data[i,c("antigen")] == "Ro60"){
+          col[i] <- "hotpink"
+        } else if (data[i,c("antigen")] == "Ro52"){
+          col[i] <- "gold"
+        } else if (data[i,c("antigen")] == "La"){
+          col[i] <- "red"
+        } else if (data[i,c("antigen")] == "Ro60,Ro52"){
+          col[i] <- "purple"
+        } else {
+          col[i] <- "cyan"
+        }
+        
+      } else{
+        col[i] <- "black"
+        
+      }
+    }
+  } else {
+    col <- rep("black", times = nrow(data))
+    seurat_clusters <- data.frame(cell_barcode = rownames(seurat@meta.data), cluster = seurat@meta.data$annotation)
+    seurat_clusters <- seurat_clusters[grepl(ident, seurat_clusters$cell_barcode),]
+    seurat_clusters$barcode <- gsub(paste0(ident, "_"), "", seurat_clusters$cell_barcode)
+    
+    data$barcode <- gsub("-1_contig_2|-1_contig_1", "", data$sequence_id)
+    
+    
+    # Sort seurat_clusters based on the order
+    seurat_clusters <- seurat_clusters[seurat_clusters$barcode %in% data$barcode,]
+    data <- left_join(data, seurat_clusters, by = "barcode")
+    data[,c("cell_barcode", "barcode")] <- NULL
+  }
+  
+  for (i in 1:nrow(data)){
+    for (j in 1:nrow(data)){
+      barcode_1 <-  gsub("-1_contig_2|-1_contig_1|-1_contig_1_1|-1_contig_2_1", "", data$sequence_id[[i]])
+      barcode_2 <-  gsub("-1_contig_2|-1_contig_1|-1_contig_1_1|-1_contig_2_1", "", data$sequence_id[[j]])
+      
+      if (barcode_1 == barcode_2){
+        cols <- col[c(i,j)]
+        cols <- cols[cols != "black"]
+        
+        if(length(unique(cols)) == 1){
+          col[c(i,j)] <- cols
+        }
+        }
+      }
+    }
+  
+  
+  #generate a coloured sidebar for the cluster
+  if(annotation == T){
+    colors <- distinctColorPalette(k = length(unique(seurat$annotation)))
+  unique_clusters <- unique(seurat$annotation)
+  cluster_col <- data.frame(cluster = unique_clusters, cluster_color = colors)
+  cluster_col <- rbind(cluster_col, data.frame(cluster = NA, cluster_color = "#000000"))
+
+  cluster_col <- cluster_col[cluster_col$cluster %in% data$cluster,]
+  
+  data <- inner_join(cluster_col, data, by = "cluster")
+  data$cluster_color[grepl("GERM", data$sequence_id)] <- NA
+  data <- data[order(match(data$sequence_id, tree@label)),]
+
+  colors <- data$cluster_color
+  colors <- colors[!is.na(colors)]
+  }
+  
+  
+  #Make the tree plot
+  phylo <- phyloXXYY(tree)
+  
+  annot_bar <- grid::viewport(width = 0.8, height = 0.8)
+  grid::pushViewport(annot_bar)
+
+  # Add the colored rectangles
+  if (annotation == T){
+      sequence_y <- seq(-0.1, 1.02, by = 1/length(colors))
+  sequence_y <- rev(sequence_y)
+  
+
+  
+  for (i in 1:length(colors)) {
+    grid.rect(x = 1.1, y = sequence_y[[i]], width = 0.05, height = 1/length(colors),
+              default.units = "npc", just = "center", gp = gpar(fill = colors[i]))
+  }
+  
+  
+  #Add in the makeshift legend
+  
+  
+  for (i in 1:nrow(cluster_col)){
+    grid.rect(x = 0 , y = 0.9 + (i/30), width = 0.05, height = 0.04,
+              default.units = "npc", just = "center", gp = gpar(fill = cluster_col$cluster_color[i]))
+    
+    grid.text(cluster_col$cluster[[i]], x = 0.1, y = 0.9 + (i/30),
+              just = "centre", hjust = NULL,  default.units = "npc",
+               gp = gpar())
+    
+  }
+  }
+ 
+  #Plot the tree
+  plot <- plotOneTree(phylo, type = "phylogram", show.tip.label = TRUE, 
+                      show.node.label = FALSE, tip.color = col, edge.color = 'black',
+                      edge.width = 1, node.color = "black", rot = 0)
+  
+
+  # Exit the viewport
+  grid::popViewport()
+  
+  return(plot)
+
+}
+
+
+phylo_tree("123_1", ident = "D004PG", seurat_combined_subset)
+phylo_tree("346_2", ident = "D002", seurat_combined_subset)
+phylo_tree("438_19", ident = "D001", seurat_combined_subset)
+phylo_tree(db3, "2434_2269", auto_3)
+
+#Test largest D003 and D007 trees
+phylo_tree(tree_number =  names(which.max(lapply(db3_seq, length))), ident = "D003", seurat = seurat_combined_subset)
+phylo_tree(tree_number =  names(which.max(lapply(db7_seq, length))), ident = "D007", seurat = seurat_combined_subset)
+```
+
+```{r Make figure}
+#Make Figure 5 of the report
+phylo_tree("118_1", ident = "D004PG", seurat_combined_subset, annotation = F) #run in console
+RF_tree <- grid.grab() #run in console
+phylo_tree("172_50", ident = "B005-1", seurat_combined_subset, annotation = F) #run in console
+ANA_tree <- grid.grab() #run in console
+
+RF_tree <- as_ggplot(RF_tree)
+ANA_tree <- as_ggplot(ANA_tree)
+
+patch5 <- (RF_tree+ANA_tree)/ighv_plot/selection_plot
+
+
+png(file="/home/sidneyz/sjogren_results/figure_5.png", width=1000, height = 1600)
+patch5 + plot_annotation(tag_levels = "A") & 
+  theme(plot.tag = element_text(size = 22, face = "bold"))
+dev.off()
+
+#Make the supplemental figure that demonstrates the isotypes
+png(file="/home/sidneyz/sjogren_results/supplemental_figure_isotypes.png", width=800, height = 600)
+isotype_plot
+dev.off()
+
+```
+
+```{r Session information}
+sessionInfo()
+```
+

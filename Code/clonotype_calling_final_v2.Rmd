@@ -1,4 +1,3 @@
-
 ---
 Title: "Clonotype calling"
 Author: Sidney van der Zande
@@ -16,6 +15,7 @@ The main clonotype calling function in this script has also been implemented in 
 
 Happy clonotyping!
 
+*author note: should you ever run into the 'cannot establish connection' error when trying to save or open a file, paste that line into the terminal and run it from there.*
 
 #Preprocessing
 ```{r Load libraries}
@@ -40,10 +40,11 @@ suppressMessages(library(stringi))
 suppressMessages(library(stringr))
 suppressMessages(library(udpipe))
 suppressMessages(library(usefun))
+```
 
-
+```{r Install Sjogren package}
 #If you have access to the sjogren package:
-suppressMessages(install("sjogren"))
+suppressMessages(install("/home/sidneyz/sjogren"))
 suppressMessages(library(sjogren))
 ```
 
@@ -73,6 +74,9 @@ pooled_PBMC_contigs$barcode <- gsub("-1", "", pooled_PBMC_contigs$barcode)
 D004_PG_contigs <- read.csv("/home/sidneyz/sjogren_data/own_data/PG/D004/filtered_feature_matrix/filtered_contig_annotations.csv")
 D004_PG_contigs$barcode <- gsub("-1", "", D004_PG_contigs$barcode)
 
+D007_PG_contigs <- read.csv("/home/sidneyz/sjogren_data/own_data/PG/D007/filtered_feature_matrix/filtered_contig_annotations.csv")
+D007_PG_contigs$barcode <- gsub("-1", "", D007_PG_contigs$barcode)
+
 B007_1_contigs <- read.csv("/home/sidneyz/sjogren_data/charlotte_data/B007-1/BCR/filtered_contig_annotations.csv")
 B007_1_contigs$barcode <- gsub("-1", "", B007_1_contigs$barcode)
 
@@ -92,10 +96,10 @@ D004_LN_contigs$ident <- "D004LN"
 D004_PG_contigs$ident <- "D004PG"
 D007_PG_contigs$ident <- "D007"
 pooled_PBMC_contigs$ident <- "AIM"
-B005_1_contigs$ident <- "B005_1"
-B005_2_contigs$ident <- "B005_2"
-B007_1_contigs$ident <- "B007_1"
-B007_2_contigs$ident <- "B007_2"
+B005_1_contigs$ident <- "B005-1"
+B005_2_contigs$ident <- "B005-2"
+B007_1_contigs$ident <- "B007-1"
+B007_2_contigs$ident <- "B007-2"
 
 
 D001_LN_contigs$donor <- "D001"
@@ -150,8 +154,8 @@ clonotype <- function(contig, threshold, levenshtein = F){
   stopifnot(require(udpipe))
   stopifnot(require(usefun))
   stopifnot(require(dplyr))
+  stopifnot(require(tidyr))
 
-#Define a faster version of the %in% operator
   `%fin%` <- function(x, table) {
     stopifnot(require(fastmatch))
     fmatch(x, table, nomatch = 0L) > 0L
@@ -166,30 +170,39 @@ clonotype <- function(contig, threshold, levenshtein = F){
     contig$cell_barcode <- paste0(contig$ident, "_", contig$barcode)
   }
 
-  #Only keep productive chains (if not filtered yet)
-  contig <- contig[contig$cdr3_nt != "None" & contig$productive == "True",]
+   #Initialisation message
+  print("Initialising...")
 
+  #Only keep productive chains
+  contig_beforefilter <- contig #save the starting contig table
 
-  #make sure threshold is okay: not larger than the amount of nucleotides in the shortest sequence, not below zero, and has to be a number
+  contig <- contig[contig$cdr3_nt != "None" & contig$productive %in% c("True", "true", T),]
+
+  contig_nonproductive <- contig_beforefilter[contig_beforefilter$cdr3_nt == "None" | !(contig_beforefilter$productive %in% c("True", "true", T)),]
+
+  print(paste0(length(unique(contig_nonproductive)), " cells had chains removed due to them being unproductive." ))
+
+  #make sure threshold is okay
   if (threshold > min(nchar(contig$cdr3_nt)) | threshold < 0 | !is.numeric(threshold)){
     stop("Please choose an appropriate threshold. This error can occur if the threshold is below 0, more than the minimum CDR3 nucleotide length, or if the threshold is non-numeric.")
   }
 
-  #Initialisation message
-  print("Initialising...")
+
 
   contig <- data.table(contig) #convert to data.table for speed
   contig_start <- contig #save the starting contig table
   suppressWarnings(contig$clonotype_new <- NULL) #remove any pre-rexisting clonotype columns
 
+  #If a gene is stated as "None", set to empty
+  contig$d_gene[contig$d_gene == "None"] <- ""
 
-  #Subset all IGH chains
+  #Take out all IGH chains
   contig_IGH <- contig[contig$chain == "IGH",]
   #Remove cells with dual IGH chains
   dual_chains <- contig_IGH$cell_barcode[duplicated(contig_IGH$cell_barcode)]
   contig_IGH <- contig_IGH[!(contig_IGH$cell_barcode %fin% dual_chains),]
 
-  print(paste0(length(dual_chains), " cells with two IGH chains were found.")) #print a message saying how many dual IGH cells were found
+  print(paste0(length(dual_chains), " cells with two IGH chains were found."))
 
 
   #Group the cells with the same IGH genes
@@ -202,7 +215,7 @@ clonotype <- function(contig, threshold, levenshtein = F){
   contig_IGH_grouping$n <-NULL
   contig_IGH_grouping$clonotype_IGH <- clonotypes_IGH #add the IGH clonotypes to the genes
 
-  contig <- left_join(contig, contig_IGH_grouping, by = c("v_gene", "d_gene", "j_gene")) #add the IGH clonotypes to the cells based on their IGH genes
+  contig <- left_join(contig, contig_IGH_grouping, by = c("v_gene", "d_gene", "j_gene")) #add the IGH clonotypes to the cells
 
 
   #Group cells with the same IGKL chains, same procedure as for IGH
@@ -253,6 +266,7 @@ clonotype <- function(contig, threshold, levenshtein = F){
 
   if (nrow(contig_IGKL_dup) > 0){
     contig_IGH_counterparts <- contig[contig$cell_barcode %fin% contig_IGKL_dup$cell_barcode,]
+    contig_IGH_counterparts <- contig_IGH_counterparts[contig_IGH_counterparts$chain == "IGH"]
     contig_IGKL_dup <- rbind(contig_IGKL_dup, contig_IGH_counterparts)
     contig <- contig[!(contig$cell_barcode %fin% contig_IGKL_dup$cell_barcode),] #replace the dual IGKL entries with the one with the most reads
     contig <- rbind(contig, contig_IGKL_dup)
@@ -304,7 +318,6 @@ clonotype <- function(contig, threshold, levenshtein = F){
 
     group_start <- contig[contig$donor == names(group)[[g]],] #save the starting contig
     groups_to_be_checked <- c()
-    setTxtProgressBar(progress_bar, value = g) #add to the progress bar
 
 
     for (s in 1:length(subgroup)){
@@ -460,6 +473,8 @@ clonotype <- function(contig, threshold, levenshtein = F){
       fill(clonotype_new, .direction = "up") %>%
       ungroup() %>%
       as.data.table()
+    
+    setTxtProgressBar(progress_bar, value = g) #add to the progress bar
 
 
   } #end of g loop
@@ -655,7 +670,7 @@ test.result <- function(contig, threshold, levenshtein = F){
 
 ```
 
-##Clonotyping with test and real data
+##Clonotyping with test data
 ```{r Run with a small test set}
 #a run with a dataset that I know contains doublets and larger clonotypes
 contig_test_5000 <- contig_0507[1:5000,]
@@ -669,26 +684,29 @@ contig_test_5000 <- sjogren::test.result(contig_test_5000, threshold = 2, levens
 ##FULL RUN D001, D002, D003, D004, D007
 ```{r Full run with data from D00* donors}
 #Full run with data from D00* donors, testing out multiple thresholds
-contig.copy <- contig_full #make a backup
+contig.copy <- contig #make a backup
 
 #Threshold of 2 nucleotides
-contig <- sjogren::clonotype(contig, threshold = 2, levenshtein = F)
-write.csv(contig, "sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405.csv")
+contig <- clonotype(contig, threshold = 2, levenshtein = F)
+write.csv(contig, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405.csv")
 
 
 contig <- contig.copy #reset to original contig data frame
 
 #Threshold of 3 nucleotides
-contig <- sjogren::clonotype(contig, threshold = 3, levenshtein = F)
-write.csv(contig, "sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold3_0405.csv")
+contig <- clonotype(contig, threshold = 3, levenshtein = F)
+write.csv(contig, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold3_0405.csv")
 
 
 contig <- contig.copy #reset to original contig data frame
 
 
 #Threshold of 4 nucleotides
-contig <- sjogren::clonotype(contig, threshold = 4, levenshtein = F)
-write.csv(contig, "sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold4_0405.csv")
+contig <- clonotype(contig, threshold = 4, levenshtein = F)
+write.csv(contig, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold4_0405.csv")
+
+contig <- contig.copy #reset to original contig data frame
+
 
 ```
 
@@ -699,34 +717,34 @@ write.csv(contig, "sjogren_results/own_data/combined/clonotypes_ownscript_mathij
 contig <- contig_0507 #make a backup
 
 #Threshold of 2 nt
-contig_0507 <- sjogren::clonotype(contig_0507, threshold = 2, levenshtein = F)
-write.csv(contig_0507, "sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405.csv")
+contig_0507 <- clonotype(contig_0507, threshold = 2, levenshtein = F)
+write.csv(contig_0507, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405.csv")
 
 
 contig_0507 <- contig #reset back to original df
 
 #Threshold 3
-contig_0507 <- sjogren::clonotype(contig_0507, threshold = 3, levenshtein = F)
-write.csv(contig_0507, "sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold3_0405.csv")
+contig_0507 <- clonotype(contig_0507, threshold = 3, levenshtein = F)
+write.csv(contig_0507, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold3_0405.csv")
 
 contig_0507 <- contig
 
 #Threshold 4
-contig_0507 <- sjogren::clonotype(contig_0507, threshold = 4, levenshtein = F)
-write.csv(contig_0507, "sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold4_0405.csv")
+contig_0507 <- clonotype(contig_0507, threshold = 4, levenshtein = F)
+write.csv(contig_0507, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold4_0405.csv")
 
 ```
 
 ##Plotting the results
 ```{r Plot the amount of clonotypes per threshold}
 #Check for the amount of clonotypes per threshold:
-contig_full_02 <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405.csv")
-contig_full_03 <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold3_0405.csv")
-contig_full_04 <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold4_0405.csv")
+contig_full_02 <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405.csv")
+contig_full_03 <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold3_0405.csv")
+contig_full_04 <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold4_0405.csv")
 
-contig_b0057_02 <-  read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405.csv")
-contig_b0057_03 <-  read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold3_0405.csv")
-contig_b0057_04 <-  read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold4_0405.csv")
+contig_b0057_02 <-  read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405.csv")
+contig_b0057_03 <-  read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold3_0405.csv")
+contig_b0057_04 <-  read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold4_0405.csv")
 
 
 
@@ -754,12 +772,12 @@ contig_b0057_04 <- test.result(contig_b0057_04, threshold = 4)
 #Pick a threshold to continue with. In my case, I chose a threshold of 2 nt.
 
 #D00*
-contig_full <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405.csv")
+contig_full <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405.csv")
 contig_full$clonotype_new <- as.character(contig_full$clonotype_new)
 contig_full$X <- NULL
 
 #B00*
-contig_0507 <- read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405.csv")
+contig_0507 <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405.csv")
 contig_0507$clonotype_new <- as.character(contig_0507$clonotype_new)
 contig_0507$X <- NULL
 
@@ -908,11 +926,11 @@ sequences_0507 <- as.data.frame(ungroup(sequences_0507))
 contig_full <- assign_autoreactivity(contig_full, sequences)
 contig_0507 <- assign_autoreactivity(contig_0507, sequences_0507)
 
-write.csv(contig_full, "sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405_annotated.csv")
-write.csv(contig_0507, "sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405_annotated.csv")
+write.csv(contig_full, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405_annotated.csv")
+write.csv(contig_0507, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405_annotated.csv")
 
-contig_full <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405_annotated.csv")
-contig_0507 <- read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405_annotated.csv")
+contig_full <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405_annotated.csv")
+contig_0507 <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405_annotated.csv")
 ```
 
 ```{r Plot counts of autoreactive cells}
@@ -954,19 +972,18 @@ ggplot(contig_all_summary, aes(x=donor, y = n, fill = factor(antigen, levels = c
 ```{r Combine the two data frames}
 #combine the two data frames
 #First, set the clonotype numbers of B005 and B007 to not occur in the D00 data frame (non-overlapping clonotype numbers)
-max_D00 <- max(as.integer(contig_full$clonotype_new[contig_full$clonotype_new != "none"]))
-contig_0507$clonotype_new[contig_0507$clonotype_new != "none"] <- as.character(as.integer(contig_0507$clonotype_new[contig_0507$clonotype_new != "none"]) + max_D00)
+max_D00 <- max(as.integer(contig_full$clonotype_new[contig_full$clonotype_new != "none, only one chain" & contig_full$clonotype_new != "none, dual IGH"]))
+contig_0507$clonotype_new[contig_0507$clonotype_new != "none, only one chain" & contig_0507$clonotype_new != "none, dual IGH"] <- as.character(as.integer(contig_0507$clonotype_new[contig_0507$clonotype_new != "none, only one chain" & contig_0507$clonotype_new != "none, dual IGH"]) + max_D00)
 
-colnames(contig_full)[!(colnames(contig_full) %in% colnames(contig_0507))]
 contig_all <- rbindlist(list(contig_full, contig_0507), fill = TRUE)
-write.csv(contig_all, "sjogren_results/own_data/combined/alldonors_mathijs_threshold2_0405_annotated.csv")
+write.csv(contig_all, "/home/sidneyz/sjogren_results/own_data/combined/alldonors_mathijs_threshold2_0405_annotated.csv")
 ```
 
 ```{r Seurat metadata}
 #Make Seurat metadata, containing the cell barcode, clonotype, reactivity and antigen
 contig_seurat <- contig_all[,c("cell_barcode", "clonotype_new", "reactivity", "antigen")]
 contig_seurat <- as.data.frame(contig_seurat)
-contig_seurat$clonotype_new[contig_seurat$clonotype_new == "none"] <- NA #if the clonotype cannot be assigned, set to NA
+contig_seurat$clonotype_new[contig_seurat$clonotype_new == "none, only one chain" | contig_seurat$clonotype_new == "none, dual IGH"] <- NA #if the clonotype cannot be assigned, set to NA
 
 contig_seurat <- contig_seurat[!duplicated(contig_seurat$cell_barcode),] #remove duplicate entries per cell
 
@@ -977,7 +994,7 @@ length(unique(contig_full$cell_barcode)) + length(unique(contig_0507$cell_barcod
 contig_seurat$cell_barcode <- gsub("^B005_", "B005-", contig_seurat$cell_barcode)
 contig_seurat$cell_barcode <- gsub("^B007_", "B007-", contig_seurat$cell_barcode)
 
-write.csv(contig_seurat, "sjogren_results/own_data/combined/alldonors_mathijs_threshold2_0405_annotated_seuratmeta.csv")
+write.csv(contig_seurat, "/home/sidneyz/sjogren_results/own_data/combined/alldonors_mathijs_threshold2_0405_annotated_seuratmeta.csv")
 ```
 
 
@@ -1256,18 +1273,67 @@ ggplot(auto_data, aes(x=reactivity, y = n_cells, fill = threshold)) +
 D004 has paired samples: in the lymph node and salivary gland. Which clonotype has cells in both tissues?
 ```{r Clonal overlap D004}
 #Clonal overlap D004
-D004 <- contig_full_02[contig_full_02$donor == "D004",]
+D004 <- contig_full[contig_full$donor == "D004",]
 D004 <- D004[!duplicated(D004$cell_barcode),] #keep one entry per cell
 
 D004_group <- D004 %>%
   group_by(clonotype_new, ident) %>%
-  filter(clonotype_new != "none") %>%
+  filter(clonotype_new != "none, only one chain" & clonotype_new != "none, dual IGH") %>%
   dplyr::count()
 
 check <- D004_group[duplicated(D004_group$clonotype_new),] #find which clonotypes have entries in both samples/tissues
 check <- D004[D004$clonotype_new %in% check$clonotype_new,] #extract all cells belonging to that clonotype
+
+unique(check$clonotype_new)
 ```
 
+##Clonal overlap B007/D002
+Samples B007 and D002 come from the same donor, only a few years apart. What is the clonal overlap here?
+
+```{r Clonal overlap B007/D002}
+#Make a large dataframe of B007 and D002 combined
+B007_contigs <- rbind(B007_1_contigs, B007_2_contigs)
+B007_contigs$cell_barcode.2 <- paste0(B007_contigs$ident, "_", B007_contigs$barcode)
+D002_LN_contigs$cell_barcode.2 <- paste0(D002_LN_contigs$ident, "_", D002_LN_contigs$barcode)
+
+#For the clonotyping to work, we need to indicate that these two samples come from the same donor
+list <- list(B007_contigs, D002_LN_contigs)
+D002_contigs <- rbindlist(list, fill = TRUE)
+D002_contigs$donor <- "D002"
+D002_contigs$cell_barcode <- D002_contigs$cell_barcode.2
+
+#Clonotyping
+D002_clonotyped <- clonotype(D002_contigs, threshold = 2, levenshtein = F)
+
+#Add the donor back in based on the cell barcode
+D002_clonotyped$donor <- NA
+for (i in 1:nrow(D002_clonotyped)){
+  if (grepl("B007", D002_clonotyped$cell_barcode.2[[i]])){
+    D002_clonotyped$donor[[i]] <- "B007"
+  }
+  if (grepl("D002", D002_clonotyped$cell_barcode.2[[i]])){
+    D002_clonotyped$donor[[i]] <- "D002"
+  }
+}
+
+summary(as.factor(D002_clonotyped$donor))
+
+```
+
+```{r Examine the clonal overlap}
+D002_clonotyped <- D002_clonotyped[!grepl("none", D002_clonotyped$clonotype_new),]
+D002_clonotype_subset <- D002_clonotyped[D002_clonotyped$donor == "D002",]
+B007_clonotype_subset <- D002_clonotyped[D002_clonotyped$donor == "B007",]
+
+overlap <- intersect(D002_clonotype_subset$clonotype_new, B007_clonotype_subset$clonotype_new)
+
+test <- D002_clonotyped %>%
+  group_by(clonotype_new, donor) %>%
+  dplyr::count()
+
+summary(duplicated(test$clonotype_new))
+
+```
 
 ```{r Session information}
 session_info()

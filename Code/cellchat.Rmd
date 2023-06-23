@@ -1,0 +1,288 @@
+---
+Title: "Cellchat interaction analyses"
+Author: Sidney van der Zande
+Date: 23-06-2023
+---
+
+This script is meant to be used to perform basic-level Cellchat analyses with. Cellchat is a tool that can identify receptor-ligand interactions between cells. 
+Sources:
+Cellchat paper https://www.nature.com/articles/s41467-021-21246-9
+Cellchat GitHub page https://github.com/sqjin/CellChat
+Cellchat website http://www.cellchat.org/
+
+Just as a warning: this script requires the use of parallel cores and tweaks some global R options. I revert these settings back at the end of the script, but other functions that you run after this script might turn out a bit off. I would suggest restarting your R session after running this script.
+
+*Currently there are six comparisons to choose from:*
+
+"Global": This is your default comparison. It performs an interaction analysis containing all celltypes from all tissues.
+
+"Lymph node MBC": This is a comparison of the three lymph node memory B cell clusters (IGHA+ MBC, IGHG+/IGHA+ MBC and FCRL4+ MBC) against the lymph node T cell subsets.
+
+"Lymph node MBC isotype": This is the same comparison as the "lymph node MBC" comparison, but now the lymph node MBC clusters are separated based on their isotype (IGHM or IGHG).
+
+"Salivary gland MBC": This is a comparison of the three salivary gland memory B cell clusters (CXCR4+ SG MBC, Activated SG MBC and Exhausted SG MBC) against the salivary gland T cell subsets.
+
+"Salivary gland RF MBC": This is the same comparison as the "salivary gland MBC" comparison, but now the SG MBCs are split up into RF cells and non-autoreactive cells.
+
+"Germinal centre": This is a comparison of the germinal centre subclusters (DZ, LZ, non-proli DZ and non-B GC) against all other cells (T and B, regardless of tissue).
+
+```{r Enter comparison}
+#These are your comparison options:
+comparison_full <- c("global", "lymph node MBC", "lymph node MBC isotype", "salivary gland MBC", "salivary gland RF MBC", "germinal centre")
+names(comparison_full) <- c(1,2,3,4,5,6)
+comparison_full
+```
+
+```{r Pick a comparison}
+#Pick the number of the comparison you want to perform here:
+number <- 1
+```
+
+```{r Load libraries, global options}
+#Load libraries, set some global options
+library(CellChat)
+library(patchwork)
+library(Seurat)
+
+options(stringsAsFactors = FALSE)
+```
+
+```{r Add cluster annotations}
+#Get the B cell specific and general annotations out
+annotations.df <- seurat_combined_subset@meta.data[,c("cell_barcode", "annotation")]
+annotations_full.df <- seurat_combined@meta.data[,c("cell_barcode", "annotation_full")]
+
+#Add the two annotations together
+annotations_full.df <- left_join(annotations_full.df, annotations.df,  by = "cell_barcode")
+rownames(annotations_full.df) <- annotations_full.df$cell_barcode
+
+#Replace the global annotations with more specific B cell annotations where applicable
+annotations_full.df$cell_barcode <- NULL
+annotations_full.df$annotation_full[!is.na(annotations_full.df$annotation)] <- annotations_full.df$annotation[!is.na(annotations_full.df$annotation)]
+annotations_full.df$annotation <- NULL
+
+#Add to large seurat object
+colnames(annotations_full.df) <- "annotations_mix"
+seurat_combined <- AddMetaData(seurat_combined, annotations_full.df)
+Idents(seurat_combined) <- seurat_combined@meta.data$annotations_mix
+```
+
+
+```{r Prepare the seurat object}
+#Selection of the chosen comparison:
+comparison <- comparison_full[[number]]
+
+#Compare all celltypes from all tissues
+if (comparison == "global"){
+
+Idents(seurat_combined) <- seurat_combined@meta.data$annotation_mix
+seurat_combined_cellchat <- seurat_combined
+Idents(seurat_combined_cellchat) <- seurat_combined_cellchat@meta.data$annotations_mix
+
+}
+
+#Lymph node MBC comparison
+if (comparison == "lymph node MBC"){
+  
+Idents(seurat_combined) <- seurat_combined@meta.data$annotation_mix
+seurat_combined_cellchat <- subset(seurat_combined, idents = c("Salivary T", "Naive & GC T", "CD4+ Naive T", "Activated CD8+ T", "Tfh", "Naive CD8+ T",
+                                                               "Activated CD8+ (blood)", "IGHA+ MBC", "IGHA+/IGHG+ MBC",
+                                                               "FCRL4+ MBC", "Activated CD4+ T", "pre-GC T"))
+seurat_combined_cellchat <- subset(seurat_combined_cellchat, subset = tissue == "Lymph node")
+Idents(seurat_combined_cellchat) <- seurat_combined_cellchat@meta.data$annotations_mix
+
+}
+
+#Lymph node MBC comparison, split by isotype
+if (comparison == "lymph node MBC isotype"){
+isotypes <- seurat_combined_subset@meta.data[,c("cell_barcode", "isotype")]
+rownames(isotypes) <- isotypes$cell_barcode
+isotypes$cell_barcode <- NULL
+seurat_combined <- AddMetaData(seurat_combined, isotypes)
+
+seurat_combined@meta.data$annotation_iso <- NULL
+seurat_combined$annotation_iso <- paste0(seurat_combined$annotations_mix, "_", seurat_combined$isotype)
+seurat_combined$annotation_iso[!(seurat_combined$annotations_mix %in% c("FCRL4+ MBC",  "IGHG+/IGHA+ MBC", "IGHA+ MBC"))] <- seurat_combined$annotations_mix[!(seurat_combined$annotations_mix %in% c("FCRL4+ MBC",  "IGHG+/IGHA+ MBC", "IGHA+ MBC"))]
+
+Idents(seurat_combined) <- seurat_combined@meta.data$annotation_mix
+seurat_combined_cellchat <- subset(seurat_combined, idents = c("Salivary T", "Naive & GC T", "CD4+ Naive T", "Activated CD8+ T", "Tfh", "Naive CD8+ T",
+                                                               "Activated CD8+ (blood)", "IGHA+ MBC", "IGHA+/IGHG+ MBC",
+                                                               "FCRL4+ MBC", "Activated CD4+ T", "pre-GC T"))
+seurat_combined_cellchat <- subset(seurat_combined_cellchat, subset = tissue == "Lymph node")
+
+Idents(seurat_combined_cellchat) <- seurat_combined_cellchat@meta.data$annotation_iso
+
+}
+
+#Salivary gland MBC comparison
+if (comparison == "salivary gland MBC"){
+Idents(seurat_combined) <- seurat_combined@meta.data$annotation_mix
+seurat_combined_cellchat <- subset(seurat_combined, idents = c("Salivary T", "Naive & GC T", "CD4+ Naive T", "Activated CD8+ T", "Tfh", "Naive CD8+ T",
+                                                               "Activated CD8+ (blood)", "Germinal center", "Exhausted SG MBC","Activated SG MBC", "CXCR4+ SG MBC", "SG PC" ,"Activated CD4+ T",  #11 to 15
+                                                               "pre-GC T"))
+seurat_combined_cellchat <- subset(seurat_combined_cellchat, subset = tissue == "Salivary gland")
+Idents(seurat_combined_cellchat) <- seurat_combined_cellchat@meta.data$annotations_mix
+
+}
+
+#Salivary gland RF MBC vs salivary gland non-autoreactive MBC
+if (comparison == "salivary gland RF MBC"){
+Idents(seurat_combined) <- seurat_combined@meta.data$annotation_mix
+seurat_combined_cellchat <- subset(seurat_combined, idents = c("Salivary T", "Naive & GC T", "CD4+ Naive T", "Activated CD8+ T", "Tfh", "Naive CD8+ T",
+                                                               "Activated CD8+ (blood)", "Germinal center", "SG_MBC", "RF_SG_MBC" ,"Activated CD4+ T",
+                                                               "pre-GC T"))
+seurat_combined_cellchat <- subset(seurat_combined_cellchat, subset = tissue == "Salivary gland")
+Idents(seurat_combined_cellchat) <- seurat_combined_cellchat@meta.data$annotations_mix
+
+}
+
+#Germinal centre comparison
+if (comparison == "germinal centre"){
+  #save seurat object
+  seurat_combined_cellchat <- seurat_combined
+  
+#Read in germinal centre annotations from GC reclustering of the full_analysis script
+gc_meta <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/gc_recluster_donorsep.csv")
+rownames(gc_meta) <- gc_meta$X
+gc_meta$X <- NULL
+colnames(gc_meta) <- "annotation_gc"
+gc_meta$cell_barcode <- rownames(gc_meta)
+
+gc_meta <- left_join(annotations_full.df, gc_meta, by = "cell_barcode")
+
+gc_meta$annotations_mix[!is.na(gc_meta$annotation_gc)] <- gc_meta$annotation_gc[!is.na(gc_meta$annotation_gc)]
+gc_meta$annotation_gc <- NULL
+rownames(gc_meta) <- gc_meta$cell_barcode
+gc_meta$cell_barcode <- NULL
+colnames(gc_meta) <- "annotation_mix"
+
+seurat_combined_cellchat <- AddMetaData(seurat_combined_cellchat, gc_meta)
+Idents(seurat_combined_cellchat) <- seurat_combined@meta.data$annotation_mix
+
+}
+
+```
+
+```{r Prepare input data}
+#Get Seurat data out
+data.input <- GetAssayData(seurat_combined_cellchat, assay = "RNA", slot = "data") # normalized data matrix
+
+labels <- Idents(seurat_combined_cellchat) #celltype labels
+meta <- data.frame(group = labels, row.names = names(labels)) # create a dataframe of the cell labels
+
+
+#Make into cellchat object
+cellchat <- createCellChat(object = data.input, meta = meta, group.by = "group")
+
+#Add DB to be used
+CellChatDB <- CellChatDB.human 
+cellchat@DB <- CellChatDB
+```
+
+Note: the section below can run very slowly if you have a lot of cells. Do not worry, that is completely normal.
+
+```{r Identify overexpressed ligands}
+#Identify overexpressed receptors/ligands
+cellchat <- subsetData(cellchat)
+future::plan("multisession", workers = 4) #parallelisation
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+
+# project gene expression data onto PPI
+cellchat <- projectData(cellchat, PPI.human)
+
+#Infer a cell-cell communication network
+cellchat <- computeCommunProb(cellchat, type = "triMean", population.size = T) #calculate the average expression per group, factoring in the group size
+df.net <- subsetCommunication(cellchat) #get all the receptor-ligand interactions out
+
+cellchat <- computeCommunProbPathway(cellchat) #get communications at the signalling pathway level
+
+cellchat <- aggregateNet(cellchat) #calculate a network
+```
+
+```{r Show interaction plots}
+#Show interactions strengths between groups
+groupSize <- as.numeric(table(cellchat@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+interaction_circle <- netVisual_circle(cellchat@net$count, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+weight_circle <- netVisual_circle(cellchat@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+```
+
+```{r Interaction plots per group}
+#show per group
+mat <- cellchat@net$weight
+par(mfrow = c(3,4), xpd=TRUE)
+for (i in 1:nrow(mat)) {
+  mat2 <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+  mat2[i, ] <- mat[i, ]
+  netVisual_circle(mat2, vertex.weight = groupSize, weight.scale = T, edge.weight.max = max(mat), title.name = rownames(mat)[i])
+}
+```
+
+```{r Compare chosen celltypes to others}
+#Bubble plot showing interactions per group
+
+# show all the significant interactions (L-R pairs) from some cell groups (defined by 'sources.use') to other cell groups (defined by 'targets.use')
+ netVisual_bubble(cellchat, sources.use = c("IGHA+/IGHG+ MBC_IGHG", "IGHA+/IGHG+ MBC_IGHM"), targets.use = c(1:nrow(meta)), remove.isolate = FALSE)
+```
+
+
+```{r Identify incoming/outgoing signalling patterns}
+#Find dominant sender/receivers of information
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP") 
+gg1 <- netAnalysis_signalingRole_scatter(cellchat) #2D plot
+```
+
+```{r Generate interaction heatmap}
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat, pattern = "outgoing", width = 22, height = 20, font.size = 12)
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat, pattern = "incoming", width = 22, height = 20, font.size = 12)
+
+png(file="/home/sidneyz/sjogren_results/own_data/combined/cellchat_interaction_heatmap.png", width=1920, height=1100)
+
+ht1 + ht2 #heatmap
+
+dev.off()
+```
+
+```{r Identify optimal # of ingoing patterns}
+#Identify global interactions between pathways
+library(NMF)
+library(ggalluvial)
+
+selectK(cellchat, pattern = "outgoing") #decide on the number of pathways to include (lowest point)
+```
+
+```{r Identify outgoing signalling patterns}
+nPatterns.out <- 3
+cellchat <- identifyCommunicationPatterns(cellchat, pattern = "outgoing", k = nPatterns.out) #find the global communication patterns
+netAnalysis_river(cellchat, pattern = "outgoing") #plot the patterns: river plot
+netAnalysis_dot(cellchat, pattern = "outgoing") #plot the patterns: dotplot
+```
+
+```{r Select number of incoming patterns}
+#now do the same, but instead of outgoing signals, now for incoming signals
+selectK(cellchat, pattern = "incoming")
+```
+
+```{r Identify incoming signalling patterns}
+nPatterns.in = 3
+cellchat <- identifyCommunicationPatterns(cellchat, pattern = "incoming", k = nPatterns.in)
+netAnalysis_river(cellchat, pattern = "incoming")
+netAnalysis_dot(cellchat, pattern = "incoming")
+```
+
+```{r Save results}
+#Save results
+saveRDS(cellchat, "/home/sidneyz/sjogren_results/own_data/combined/cellchat.RDS")
+
+#Return R settings back to normal
+plan("sequential") #shut off paralellisation
+options(stringsAsFactors = TRUE)
+
+#Remove variables
+rm(cellchat, ht1, ht2, interaction_circle, weight_circle, nPatterns.in, nPatterns.out, gg1, mat, mat2, groupSize, df.net,DB, CellChatDB, meta, labels, data.input)
+```
+
+```{r Session information}
+sessionInfo()
+```
