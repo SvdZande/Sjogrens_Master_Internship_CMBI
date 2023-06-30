@@ -13,7 +13,7 @@ singularity pull docker://bioconductor/bioconductor_docker:RELEASE_3_17
 ```
 If you have any questions on Singularity or Docker, or the CMBI in general, the wiki might be of help: https://gitlab.cmbi.umcn.nl/cmbi/general/-/wikis/home
 
-##Data
+## Data
 Most of the data I used as input for my scripts is present in this GitHub repository. The cellranger filtered_contig_annotations are present for each donor. I also added the autoreactive CDR3 sequences found for each donor in the **Autoreactive_sequences** folder.
 
 ## Scripts
