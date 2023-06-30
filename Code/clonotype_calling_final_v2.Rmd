@@ -15,7 +15,7 @@ The main clonotype calling function in this script has also been implemented in 
 
 Happy clonotyping!
 
-*author note: should you ever run into the 'cannot establish connection' error when trying to save or open a file, paste that line into the terminal and run it from there.*
+*author note: should you ever run into the 'cannot establish connection' error when trying to save or open a file, paste that line into the terminal and run it from there. It probably cannot find the directory you are looking for.*
 
 #Preprocessing
 ```{r Load libraries}
@@ -44,6 +44,7 @@ suppressMessages(library(usefun))
 
 ```{r Install Sjogren package}
 #If you have access to the sjogren package:
+suppressMessages(library(devtools))
 suppressMessages(install("/home/sidneyz/sjogren"))
 suppressMessages(library(sjogren))
 ```
@@ -71,10 +72,10 @@ B005_2_contigs$barcode <- gsub("-1", "", B005_2_contigs$barcode)
 pooled_PBMC_contigs <- read.csv("/home/sidneyz/sjogren_data/own_data/PBMC/filtered_feature_matrix/filtered_contig_annotations.csv")
 pooled_PBMC_contigs$barcode <- gsub("-1", "", pooled_PBMC_contigs$barcode)
 
-D004_PG_contigs <- read.csv("/home/sidneyz/sjogren_data/own_data/PG/D004/filtered_feature_matrix/filtered_contig_annotations.csv")
+D004_PG_contigs <- read.csv("/home/sidneyz/sjogren_data/own_data/SG/D004/filtered_feature_matrix/filtered_contig_annotations.csv")
 D004_PG_contigs$barcode <- gsub("-1", "", D004_PG_contigs$barcode)
 
-D007_PG_contigs <- read.csv("/home/sidneyz/sjogren_data/own_data/PG/D007/filtered_feature_matrix/filtered_contig_annotations.csv")
+D007_PG_contigs <- read.csv("/home/sidneyz/sjogren_data/own_data/SG/D007/filtered_feature_matrix/filtered_contig_annotations.csv")
 D007_PG_contigs$barcode <- gsub("-1", "", D007_PG_contigs$barcode)
 
 B007_1_contigs <- read.csv("/home/sidneyz/sjogren_data/charlotte_data/B007-1/BCR/filtered_contig_annotations.csv")
@@ -82,8 +83,6 @@ B007_1_contigs$barcode <- gsub("-1", "", B007_1_contigs$barcode)
 
 B007_2_contigs <- read.csv("/home/sidneyz/sjogren_data/charlotte_data/B007-2/BCR/filtered_contig_annotations.csv")
 B007_2_contigs$barcode <- gsub("-1", "", B007_2_contigs$barcode)
-
-
 ```
 
 
@@ -113,7 +112,6 @@ B005_1_contigs$donor <- "B005"
 B005_2_contigs$donor <- "B005"
 B007_1_contigs$donor <- "B007"
 B007_2_contigs$donor <- "B007"
-
 ```
 
 ```{r Combine samples into dataframe}
@@ -125,7 +123,6 @@ contig$cell_barcode <- paste0(contig$ident, "_", contig$barcode)
 contig_0507 <- list(B005_1_contigs,B005_2_contigs,B007_1_contigs,B007_2_contigs)
 contig_0507 <- rbindlist(contig_0507,use.names = TRUE)
 contig_0507$cell_barcode <- paste0(contig_0507$ident, "_", contig_0507$barcode)
-
 ```
 
 ```{r Filtering: only keep productive chains}
@@ -266,7 +263,7 @@ clonotype <- function(contig, threshold, levenshtein = F){
 
   if (nrow(contig_IGKL_dup) > 0){
     contig_IGH_counterparts <- contig[contig$cell_barcode %fin% contig_IGKL_dup$cell_barcode,]
-    contig_IGH_counterparts <- contig_IGH_counterparts[contig_IGH_counterparts$chain == "IGH"]
+    contig_IGH_counterparts <- contig_IGH_counterparts[contig_IGH_counterparts$chain == "IGH",]
     contig_IGKL_dup <- rbind(contig_IGKL_dup, contig_IGH_counterparts)
     contig <- contig[!(contig$cell_barcode %fin% contig_IGKL_dup$cell_barcode),] #replace the dual IGKL entries with the one with the most reads
     contig <- rbind(contig, contig_IGKL_dup)
@@ -688,14 +685,14 @@ contig.copy <- contig #make a backup
 
 #Threshold of 2 nucleotides
 contig <- clonotype(contig, threshold = 2, levenshtein = F)
-write.csv(contig, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405.csv")
+write.csv(contig, "/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_ownscript_mathijs_threshold2_0405.csv")
 
 
 contig <- contig.copy #reset to original contig data frame
 
 #Threshold of 3 nucleotides
 contig <- clonotype(contig, threshold = 3, levenshtein = F)
-write.csv(contig, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold3_0405.csv")
+write.csv(contig, "/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_ownscript_mathijs_threshold3_0405.csv")
 
 
 contig <- contig.copy #reset to original contig data frame
@@ -703,7 +700,7 @@ contig <- contig.copy #reset to original contig data frame
 
 #Threshold of 4 nucleotides
 contig <- clonotype(contig, threshold = 4, levenshtein = F)
-write.csv(contig, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold4_0405.csv")
+write.csv(contig, "/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_ownscript_mathijs_threshold4_0405.csv")
 
 contig <- contig.copy #reset to original contig data frame
 
@@ -718,40 +715,40 @@ contig <- contig_0507 #make a backup
 
 #Threshold of 2 nt
 contig_0507 <- clonotype(contig_0507, threshold = 2, levenshtein = F)
-write.csv(contig_0507, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405.csv")
+write.csv(contig_0507, "/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_B005B007_mathijs_threshold2_0405.csv")
 
 
 contig_0507 <- contig #reset back to original df
 
 #Threshold 3
 contig_0507 <- clonotype(contig_0507, threshold = 3, levenshtein = F)
-write.csv(contig_0507, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold3_0405.csv")
+write.csv(contig_0507, "/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_B005B007_mathijs_threshold3_0405.csv")
 
 contig_0507 <- contig
 
 #Threshold 4
 contig_0507 <- clonotype(contig_0507, threshold = 4, levenshtein = F)
-write.csv(contig_0507, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold4_0405.csv")
+write.csv(contig_0507, "/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_B005B007_mathijs_threshold4_0405.csv")
 
 ```
 
 ##Plotting the results
 ```{r Plot the amount of clonotypes per threshold}
 #Check for the amount of clonotypes per threshold:
-contig_full_02 <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405.csv")
-contig_full_03 <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold3_0405.csv")
-contig_full_04 <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold4_0405.csv")
+contig_full_02 <- read.csv("/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_ownscript_mathijs_threshold2_0405.csv")
+contig_full_03 <- read.csv("/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_ownscript_mathijs_threshold3_0405.csv")
+contig_full_04 <- read.csv("/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_ownscript_mathijs_threshold4_0405.csv")
 
-contig_b0057_02 <-  read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405.csv")
-contig_b0057_03 <-  read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold3_0405.csv")
-contig_b0057_04 <-  read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold4_0405.csv")
+contig_b0057_02 <-  read.csv("/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_B005B007_mathijs_threshold2_0405.csv")
+contig_b0057_03 <-  read.csv("/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_B005B007_mathijs_threshold3_0405.csv")
+contig_b0057_04 <-  read.csv("/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_B005B007_mathijs_threshold4_0405.csv")
 
 
 
 clonotype_numbers <- data.frame(donor_data_frame = c("D00", "D00", "D00", "B00", "B00", "B00"), threshold = c(2,3,4), clonotype_number = c(length(unique(contig_full_02$clonotype_new)), length(unique(contig_full_03$clonotype_new)), length(unique(contig_full_04$clonotype_new)), length(unique(contig_b0057_02$clonotype_new)), length(unique(contig_b0057_03$clonotype_new)), length(unique(contig_b0057_04$clonotype_new))))
 
 
-ggplot(clonotype_numbers, aes(x = threshold, y = clonotype_number, fill = threshold)) + geom_col(position = "dodge") +
+ggplot(clonotype_numbers, aes(x = threshold, y = clonotype_number, fill = factor(threshold))) + geom_col(position = "dodge") +
   facet_grid(~donor_data_frame) + ggbreak::scale_y_break(c(100,4000)) + geom_text(aes(label=clonotype_number), position=position_dodge(width=0.9), vjust=-0.25)
 ```
 
@@ -772,12 +769,12 @@ contig_b0057_04 <- test.result(contig_b0057_04, threshold = 4)
 #Pick a threshold to continue with. In my case, I chose a threshold of 2 nt.
 
 #D00*
-contig_full <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405.csv")
+contig_full <- read.csv("/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_ownscript_mathijs_threshold2_0405.csv")
 contig_full$clonotype_new <- as.character(contig_full$clonotype_new)
 contig_full$X <- NULL
 
 #B00*
-contig_0507 <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405.csv")
+contig_0507 <- read.csv("/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_B005B007_mathijs_threshold2_0405.csv")
 contig_0507$clonotype_new <- as.character(contig_0507$clonotype_new)
 contig_0507$X <- NULL
 
@@ -926,11 +923,11 @@ sequences_0507 <- as.data.frame(ungroup(sequences_0507))
 contig_full <- assign_autoreactivity(contig_full, sequences)
 contig_0507 <- assign_autoreactivity(contig_0507, sequences_0507)
 
-write.csv(contig_full, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405_annotated.csv")
-write.csv(contig_0507, "/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405_annotated.csv")
+write.csv(contig_full, "/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_ownscript_mathijs_threshold2_0405_annotated.csv")
+write.csv(contig_0507, "/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_B005B007_mathijs_threshold2_0405_annotated.csv")
 
-contig_full <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405_annotated.csv")
-contig_0507 <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405_annotated.csv")
+contig_full <- read.csv("/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_ownscript_mathijs_threshold2_0405_annotated.csv")
+contig_0507 <- read.csv("/home/sidneyz/sjogren_results/own_data/clonotyping/clonotypes_B005B007_mathijs_threshold2_0405_annotated.csv")
 ```
 
 ```{r Plot counts of autoreactive cells}
@@ -976,7 +973,7 @@ max_D00 <- max(as.integer(contig_full$clonotype_new[contig_full$clonotype_new !=
 contig_0507$clonotype_new[contig_0507$clonotype_new != "none, only one chain" & contig_0507$clonotype_new != "none, dual IGH"] <- as.character(as.integer(contig_0507$clonotype_new[contig_0507$clonotype_new != "none, only one chain" & contig_0507$clonotype_new != "none, dual IGH"]) + max_D00)
 
 contig_all <- rbindlist(list(contig_full, contig_0507), fill = TRUE)
-write.csv(contig_all, "/home/sidneyz/sjogren_results/own_data/combined/alldonors_mathijs_threshold2_0405_annotated.csv")
+write.csv(contig_all, "/home/sidneyz/sjogren_results/own_data/clonotyping/alldonors_mathijs_threshold2_0405_annotated.csv")
 ```
 
 ```{r Seurat metadata}
@@ -994,7 +991,7 @@ length(unique(contig_full$cell_barcode)) + length(unique(contig_0507$cell_barcod
 contig_seurat$cell_barcode <- gsub("^B005_", "B005-", contig_seurat$cell_barcode)
 contig_seurat$cell_barcode <- gsub("^B007_", "B007-", contig_seurat$cell_barcode)
 
-write.csv(contig_seurat, "/home/sidneyz/sjogren_results/own_data/combined/alldonors_mathijs_threshold2_0405_annotated_seuratmeta.csv")
+write.csv(contig_seurat, "/home/sidneyz/sjogren_results/own_data/clonotyping/alldonors_mathijs_threshold2_0405_annotated_seuratmeta.csv")
 ```
 
 
@@ -1137,20 +1134,20 @@ contig_b0057_02 <- B00list[[1]]
 contig_b0057_03 <- B00list[[2]]
 contig_b0057_04 <- B00list[[3]]
 
-write.csv(contig_full_03, "sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold3_0405_annotated.csv")
-write.csv(contig_full_04, "sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold4_0405_annotated.csv")
+write.csv(contig_full_03, "sjogren_results/own_data/clonotyping/clonotypes_ownscript_mathijs_threshold3_0405_annotated.csv")
+write.csv(contig_full_04, "sjogren_results/own_data/clonotyping/clonotypes_ownscript_mathijs_threshold4_0405_annotated.csv")
 
-write.csv(contig_b0057_03, "sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold3_0405_annotated.csv")
-write.csv(contig_b0057_04, "sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold4_0405_annotated.csv")
+write.csv(contig_b0057_03, "sjogren_results/own_data/clonotyping/clonotypes_B005B007_mathijs_threshold3_0405_annotated.csv")
+write.csv(contig_b0057_04, "sjogren_results/own_data/clonotyping/clonotypes_B005B007_mathijs_threshold4_0405_annotated.csv")
 
 
-contig_full_02 <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold2_0405_annotated.csv")
-contig_full_03 <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold3_0405_annotated.csv")
-contig_full_04 <- read.csv("sjogren_results/own_data/combined/clonotypes_ownscript_mathijs_threshold4_0405_annotated.csv")
+contig_full_02 <- read.csv("sjogren_results/own_data/clonotyping/clonotypes_ownscript_mathijs_threshold2_0405_annotated.csv")
+contig_full_03 <- read.csv("sjogren_results/own_data/clonotyping/clonotypes_ownscript_mathijs_threshold3_0405_annotated.csv")
+contig_full_04 <- read.csv("sjogren_results/own_data/clonotyping/clonotypes_ownscript_mathijs_threshold4_0405_annotated.csv")
 
-contig_b0057_02 <- read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold2_0405_annotated.csv")
-contig_b0057_03 <- read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold3_0405_annotated.csv")
-contig_b0057_04 <- read.csv("sjogren_results/own_data/combined/clonotypes_B005B007_mathijs_threshold4_0405_annotated.csv")
+contig_b0057_02 <- read.csv("sjogren_results/own_data/clonotyping/clonotypes_B005B007_mathijs_threshold2_0405_annotated.csv")
+contig_b0057_03 <- read.csv("sjogren_results/own_data/clonotyping/clonotypes_B005B007_mathijs_threshold3_0405_annotated.csv")
+contig_b0057_04 <- read.csv("sjogren_results/own_data/clonotyping/clonotypes_B005B007_mathijs_threshold4_0405_annotated.csv")
 
 #Count the amount of autoreactive sequences per threshold
 n_autoreactive_full02 <- contig_full_02[!duplicated(contig_full_02$cell_barcode),]
@@ -1332,6 +1329,18 @@ test <- D002_clonotyped %>%
   dplyr::count()
 
 summary(duplicated(test$clonotype_new))
+
+```
+
+```{r Examine overlap manually}
+#Examine the overlap manually due to gene notations differing between D002 and B007
+overlap <- intersect(D002_LN_contigs$cdr3_nt, B007_contigs$cdr3_nt)
+
+D002_overlap <- D002_LN_contigs[D002_LN_contigs$cdr3_nt %in% overlap,]
+B007_overlap <- B007_contigs[B007_contigs$cdr3_nt %in% overlap,]
+D002_overlap <- D002_overlap[D002_overlap$chain == "IGH",]
+
+B007_overlap <- B007_overlap[B007_overlap$chain == "IGH",]
 
 ```
 

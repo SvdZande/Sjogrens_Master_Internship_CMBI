@@ -1,0 +1,498 @@
+---
+Title: "Spleen integration"
+Author: Sidney van der Zande
+Date: 28-06-2023
+---
+
+# Integration of healthy spleen data with SjS-derived data
+This script is meant for integrating a dataset of healthy spleen T and B cells with our SjS-derived T and B cell samples (analysed using the *full_analysis* script). The spleen datasets are from this paper: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7868795/ (doi: 10.1084/jem.20202001)
+
+```{r Load libraries}
+suppressMessages(library(scran))
+suppressMessages(library(SeuratWrappers))
+suppressMessages(library(batchelor))
+suppressMessages(library(RColorBrewer))
+suppressMessages(library(SeuratDisk))
+suppressMessages(library(ggplot2))
+suppressMessages(library(Matrix))
+suppressMessages(library(ggpubr))
+suppressMessages(library(gplots))
+suppressMessages(library(dplyr))
+suppressMessages(library(org.Hs.eg.db))
+suppressMessages(library(clustree))
+suppressMessages(library(pheatmap))
+suppressMessages(library(viridis))
+suppressMessages(library(plotly))
+suppressMessages(library(enrichplot))
+suppressMessages(library(readr))
+suppressMessages(library(Seurat))
+suppressMessages(library(clusterProfiler))
+suppressMessages(library(cowplot))
+suppressMessages(library(Azimuth))
+suppressMessages(library(irlba))
+suppressMessages(library(scico))
+suppressMessages(library(scuttle))
+suppressMessages(library(tibble))
+suppressMessages(library(tidyr))
+suppressMessages(library(readxl))
+suppressMessages(library(ggrepel))
+suppressMessages(library(scRepertoire))
+suppressMessages(library(data.table))
+suppressMessages(library(patchwork))
+suppressMessages(library(ggbreak))
+suppressMessages(library(devtools))
+suppressMessages(library(roxygen2))
+suppressMessages(install("sjogren"))
+suppressMessages(library(sjogren))
+suppressMessages(library(SingleCellExperiment))
+suppressMessages(library(randomcoloR))
+```
+
+```{r Load spleen datasets}
+#Read in the healthy spleen B cell datasets from this paper: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7868795/
+#(found here: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE163602)
+sample1 <- Read10X("/home/sidneyz/sjogren_data/spleen/Sample1/", strip.suffix = T)
+sample2 <- Read10X("/home/sidneyz/sjogren_data/spleen/Sample2/", strip.suffix = T)
+sample3 <- Read10X("/home/sidneyz/sjogren_data/spleen/Sample3/", strip.suffix = T)
+
+
+#Change the CITEseq rownames to match our panel
+cite <- c("HTO_AHH1", "HTO_AHH2", "Hu.CD5", "Hu.CD10", "Hu.CD21", "Hu.CD24", "Hu.CD27", "Hu.CD38-HIT2", "Hu.CD86", "Hu.CD124", "Hu.IgM", "Hu.IgD", "Hu.CD185")
+
+rownames(sample1[["Antibody Capture"]]) <- cite
+rownames(sample2[["Antibody Capture"]]) <- cite
+rownames(sample3[["Antibody Capture"]]) <- cite
+```
+
+```{r Make seurat objects}
+#Make seurat objects
+spleen_list <- list(sample1, sample2, sample3)
+names(spleen_list) <- c("Sample_1", "Sample_2", "Sample_3")
+
+spleen_list <- sjogren::generate_seurat_objects(spleen_list, min.cells = 5, min.genes = 200)
+spleen_list[[1]]@meta.data$donor <- "HC1"
+spleen_list[[2]]@meta.data$donor <- "HC2"
+spleen_list[[3]]@meta.data$donor <- "HC3"
+
+#Add metadata
+for (i in names(spleen_list)){
+  spleen_list[[i]]@meta.data$tissue <- "Spleen"
+  spleen_list[[i]]@meta.data$orig.ident <- "spleenpaper"
+  spleen_list[[i]]@meta.data$condition <- "HC"
+}
+```
+
+```{r QC filtering}
+#Quality filtering
+for (i in seq_along(spleen_list)){
+  spleen_list[[i]][['percent.MT']] <- PercentageFeatureSet(spleen_list[[i]], pattern = "^MT-")
+}
+
+#add the percentage of ribosomal genes
+for (i in seq_along(spleen_list)){
+  spleen_list[[i]][['percent.ribosomal']] <- PercentageFeatureSet(spleen_list[[i]], pattern = "^RPS|^RPL|^MRPS|^MRPL")
+}
+
+for (i in seq_along(spleen_list)){
+  spleen_list[[i]] <- suppressWarnings(CellCycleScoring(spleen_list[[i]], s.features = cc.genes$s.genes, g2m.features = cc.genes$g2m.genes, set.ident = FALSE))
+}
+```
+
+```{r Determine QC thresholds}
+#Sample 1
+counts <- spleen_list[["Sample_1"]][['RNA']]@counts
+genes_per_cell <- Matrix::colSums(counts>0) # count a gene only if it has non-zero reads mapped.
+counts_per_cell <- Matrix::colSums(counts)#calculate the amount of counts per cell
+plot(sort(genes_per_cell), xlab='cell', log='y', main='genes per cell (ordered)') #decide on a cutoff
+
+#Enter the cutoffs here:
+MIN_GENES_PER_CELL.1 <-250
+MAX_GENES_PER_CELL.1 <- 3000
+
+# now replot with the thresholds being shown:
+plot(sort(genes_per_cell), xlab='cell', log='y', main='genes per cell (ordered)')
+abline(h=MIN_GENES_PER_CELL.1, col='magenta')  # lower threshold
+abline(h=MAX_GENES_PER_CELL.1, col='gold') # upper threshold
+
+#Do the same for the mitochondrial gene cutoff
+mito_genes <- grep("^mt-", rownames(counts) , ignore.case=T, value=T)
+mito_gene_read_counts = Matrix::colSums(counts[mito_genes,])
+pct_mito = mito_gene_read_counts / counts_per_cell * 100
+plot(sort(pct_mito), xlab = "cells sorted by percentage mitochondrial counts", ylab =
+       "percentage mitochondrial counts")
+
+MAX_PCT_MITO.1 <- 30
+
+plot(sort(pct_mito))
+abline(h=MAX_PCT_MITO.1, col='red')
+
+#Sample 2
+counts <- spleen_list[["Sample_2"]][['RNA']]@counts
+genes_per_cell <- Matrix::colSums(counts>0) # count a gene only if it has non-zero reads mapped.
+counts_per_cell <- Matrix::colSums(counts)#calculate the amount of counts per cell
+plot(sort(genes_per_cell), xlab='cell', log='y', main='genes per cell (ordered)') #decide on a cutoff
+
+#Enter the cutoffs here:
+MIN_GENES_PER_CELL.2 <-250
+MAX_GENES_PER_CELL.2 <- 3000
+
+# now replot with the thresholds being shown:
+plot(sort(genes_per_cell), xlab='cell', log='y', main='genes per cell (ordered)')
+abline(h=MIN_GENES_PER_CELL.2, col='magenta')  # lower threshold
+abline(h=MAX_GENES_PER_CELL.2, col='gold') # upper threshold
+
+#Do the same for the mitochondrial gene cutoff
+mito_genes <- grep("^mt-", rownames(counts) , ignore.case=T, value=T)
+mito_gene_read_counts = Matrix::colSums(counts[mito_genes,])
+pct_mito = mito_gene_read_counts / counts_per_cell * 100
+plot(sort(pct_mito), xlab = "cells sorted by percentage mitochondrial counts", ylab =
+       "percentage mitochondrial counts")
+
+MAX_PCT_MITO.2 <- 25
+
+plot(sort(pct_mito))
+abline(h=MAX_PCT_MITO.2, col='red')
+
+#Sample 3
+counts <- spleen_list[["Sample_3"]][['RNA']]@counts
+genes_per_cell <- Matrix::colSums(counts>0) # count a gene only if it has non-zero reads mapped.
+counts_per_cell <- Matrix::colSums(counts)#calculate the amount of counts per cell
+plot(sort(genes_per_cell), xlab='cell', log='y', main='genes per cell (ordered)') #decide on a cutoff
+
+#Enter the cutoffs here:
+MIN_GENES_PER_CELL.3 <-300
+MAX_GENES_PER_CELL.3 <- 2500
+
+# now replot with the thresholds being shown:
+plot(sort(genes_per_cell), xlab='cell', log='y', main='genes per cell (ordered)')
+abline(h=MIN_GENES_PER_CELL.3, col='magenta')  # lower threshold
+abline(h=MAX_GENES_PER_CELL.3, col='gold') # upper threshold
+
+#Do the same for the mitochondrial gene cutoff
+mito_genes <- grep("^mt-", rownames(counts) , ignore.case=T, value=T)
+mito_gene_read_counts = Matrix::colSums(counts[mito_genes,])
+pct_mito = mito_gene_read_counts / counts_per_cell * 100
+plot(sort(pct_mito), xlab = "cells sorted by percentage mitochondrial counts", ylab =
+       "percentage mitochondrial counts")
+
+MAX_PCT_MITO.3 <- 15
+
+plot(sort(pct_mito))
+abline(h=MAX_PCT_MITO.3, col='red')
+```
+
+```{r Filter based on QC thresholds}
+MIN_GENES_PER_CELL.1 <- 250
+MAX_GENES_PER_CELL.1 <- 3000
+MIN_GENES_PER_CELL.2 <- 250
+MAX_GENES_PER_CELL.2 <- 3000
+MIN_GENES_PER_CELL.3 <- 300
+MAX_GENES_PER_CELL.3 <- 2500
+
+MAX_PCT_MITO.1 <- 30
+MAX_PCT_MITO.2 <- 25
+MAX_PCT_MITO.3 <- 15
+
+spleen_list[["Sample_1"]] <- subset(spleen_list[["Sample_1"]], subset = nFeature_RNA > MIN_GENES_PER_CELL.1 & nFeature_RNA < MAX_GENES_PER_CELL.1 & percent.MT < MAX_PCT_MITO.1)
+spleen_list[["Sample_2"]] <- subset(spleen_list[["Sample_2"]], subset = nFeature_RNA > MIN_GENES_PER_CELL.2 & nFeature_RNA < MAX_GENES_PER_CELL.2 & percent.MT < MAX_PCT_MITO.2)
+spleen_list[["Sample_3"]] <- subset(spleen_list[["Sample_3"]], subset = nFeature_RNA > MIN_GENES_PER_CELL.3 & nFeature_RNA < MAX_GENES_PER_CELL.3 & percent.MT < MAX_PCT_MITO.3)
+```
+
+```{r Remove contaminating genes}
+#Remove contaminating genes
+spleen_list_filtered <- sjogren::remove_genes(spleen_list)
+```
+
+```{r Normalisation and Variable features}
+#Normalisation
+for (i in seq_along(spleen_list_filtered)){
+  spleen_list_filtered[[i]] <- spleen_list_filtered[[i]] %>%
+    NormalizeData(verbose = FALSE, normalization.method = "CLR", margin = 1) %>%
+    FindVariableFeatures(selection.method = "vst", 
+                         nfeatures = 3000, verbose = FALSE)
+  if ("CITE" %in% names(spleen_list_filtered[[i]])){
+    NormalizeData(spleen_list_filtered[[i]], normalization.method = "CLR", margin = 2, assay = "CITE", verbose = FALSE)
+    VariableFeatures(spleen_list_filtered[[i]][["CITE"]]) <- rownames(spleen_list_filtered[[i]][["CITE"]])
+  }
+  print(paste("spleen object", i, "complete"))
+}
+
+#Select the variable features of the integrated object
+variable_rna <- SelectIntegrationFeatures(spleen_list_filtered, nfeatures = 3000, assay = c("RNA", "RNA", "RNA"))
+```
+
+```{r Merge the spleen objects}
+#Merge the individual spleen objects
+spleen <- merge(spleen_list_filtered[["Sample_1"]], y= spleen_list_filtered[c(2:3)],
+                         merge.data=TRUE ,add.cell.ids = c("S1", "S2", "S3"), project = "spleen")
+dim(spleen)
+```
+
+```{r Load in Seurat objects}
+seurat_combined <- LoadH5Seurat("/home/sidneyz/sjogren_data/own_data/seurat_combined.h5Seurat")
+seurat_combined_subset <- LoadH5Seurat("/home/sidneyz/sjogren_data/own_data/seurat_combined_subset.h5Seurat")
+```
+
+```{r Add annotations from SjS seurat object}
+#Add the annotations to the seurat object
+annotations_full <- seurat_combined_subset@meta.data[,c("cell_barcode", "annotation_full")]
+annotations_B <- seurat_combined_subset@meta.data[,c("cell_barcode", "annotation")]
+annotations.df <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/gc_recluster_donorsep.csv")
+rownames(annotations.df) <- annotations.df$X
+annotations.df$X <- NULL
+annotations.df$cell_barcode <- rownames(annotations.df)
+colnames(annotations.df) <- c("annotations_gc", "cell_barcode")
+
+annotations.df <- right_join(annotations.df, annotations_B, by = "cell_barcode") #merge with B cell labels
+annotations.df <- right_join(annotations.df, annotations_full, by = "cell_barcode") #merge with general labels
+annotations.df$annotation_full[!is.na(annotations.df$annotation)] <- annotations.df$annotation[!is.na(annotations.df$annotation)] #replace general labels with B cell labels wherever applicable
+annotations.df$annotation <- NULL
+rownames(annotations.df) <- annotations.df$cell_barcode
+annotations.df$cell_barcode <- NULL
+colnames(annotations.df) <- c("annotation", "annotation_gc")
+
+seurat_combined <- AddMetaData(seurat_combined, annotations.df)
+```
+
+```{RPCA integration}
+#Integrate with our seurat object
+full_object <- merge(seurat_combined, c(spleen), merge.data = T)
+object_list <- SplitObject(full_object, split.by = "condition")
+object_list <- lapply(X = object_list, FUN = function(x) {
+  x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 3000, verbose = F)
+})
+
+#Find integration features
+features <- SelectIntegrationFeatures(object.list = object_list)
+
+object_list <- lapply(X = object_list, FUN = function(x) {
+  x <- ScaleData(x, features = features, verbose = F)
+  x <- RunPCA(x, features = features, verbose = F)
+})
+
+#Perform integration
+anchors <- FindIntegrationAnchors(object.list = object_list, anchor.features = features, reduction = "rpca")
+combined_spleen <- IntegrateData(anchorset = anchors)
+```
+
+```{Scaling}
+#Clustering analyses
+DefaultAssay(combined_spleen) <- "integrated"
+
+all.genes <- rownames(combined_spleen)
+combined_spleen <- ScaleData(combined_spleen, features = all.genes, verbose = FALSE)
+combined_spleen <- ScaleData(combined_spleen, features = rownames(combined_spleen[["CITE"]]), assay = "CITE", verbose = FALSE)
+```
+
+```{r ICA, UMAP and clustering}
+combined_spleen <- RunICA(combined_spleen, features = VariableFeatures(object = combined_spleen), verbose = FALSE)
+
+combined_spleen <- RunUMAP(combined_spleen, reduction =  "ica", dims = 1:40)
+
+combined_spleen <- FindNeighbors(combined_spleen, reduction = "ica", dims = 1:40)
+
+combined_spleen <- FindClusters(combined_spleen, resolution =  seq(from = 0.1, to = 0.9, by = 0.1), algorithm = 3)
+clust_seurat <- combined_spleen@meta.data %>% dplyr::select(dplyr::contains("integrated_snn_res."))
+clustree(clust_seurat, prefix="integrated_snn_res.")
+
+
+combined_spleen <- FindClusters(combined_spleen, resolution = 0.4, algorithm = 3) 
+```
+
+```{r UMAP visualisation}
+#UMAPping
+n <-length(levels(combined_spleen))
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+cols = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+pie(rep(1,n), col=sample(cols, n))
+clust_cols <- cols[1:n]
+phase_cols <- c("peachpuff", "blue2", "orange3")
+Id_cols <- c('green','red')
+dis_cols <- c('chartreuse1','orange3', 'firebrick','blue2')
+annot_cols <- cols[41:71]
+annot_cols.2 <- cols[41:90]
+
+umap <- DimPlot(combined_spleen, reduction = 'umap', label = TRUE, repel = TRUE, label.size = 4, cols = annot_cols, raster = F) + NoLegend()
+umap_ident <- DimPlot(combined_spleen, reduction = 'umap', label = F, repel = TRUE,  group.by = "orig.ident", raster = F)
+umap_condition <- DimPlot(combined_spleen, reduction = 'umap', label = F, repel = TRUE, group.by = "condition", raster = F)
+umap_tissue <- DimPlot(combined_spleen, reduction = 'umap', label = F, repel = TRUE, group.by = "tissue", raster = F)
+
+DefaultAssay(combined_spleen) <- "RNA"
+features_rna <- FeaturePlot(combined_spleen, raster = F, features = c("rna_CD3D", "rna_CD4", "rna_CD8A", "rna_CD19", "rna_NCAM1", "rna_ITGAX", "rna_CD14", "rna_CD38","rna_CD79B"), reduction = "umap", cols = c("lightgrey", "darkblue"), order = T) + NoLegend()
+features_rna.2 <- FeaturePlot(combined_spleen, raster = F, features = c("rna_CD83", "rna_THY1", "rna_CD19", "rna_MZB1", "rna_CD79A", "rna_BCL6", "rna_CD27", "rna_IGHM", "rna_IGHG1"), reduction = "umap", cols = c("lightgrey", "darkblue"), order = T) + NoLegend()
+plot <- FeaturePlot(combined_spleen, features = c("CXCR5", "CD27", "IGHD", "BCL6", "MKI67", "AICDA", "LMO2", "CXCR4", "CCR7", "CD24", "ITGAX", "IGHM", "IGHG1", "CD79B", "CD19"), order = T, slot = "data")
+DefaultAssay(combined_spleen) <- "CITE"
+features_cite <- FeaturePlot(combined_spleen, raster = F, features = c("Hu.CD3-UCHT1", "Hu.CD4-RPA.T4", "Hu.CD8", "Hu.CD19", "Hu.CD56", "Hu.CD11c"), order = T, reduction = "umap", cols = c("lightgrey", "darkgreen"), slot = "data")
+DefaultAssay(combined_spleen) <- "integrated"
+
+umap
+umap_ident
+umap_tissue
+umap_condition
+features_rna
+features_rna.2
+features_cite
+```
+
+```{r Subset B cells}
+#subset
+combined_spleen_subset <- subset(combined_spleen, idents = c(0,2,7,3,6,14,10,8))
+dim(combined_spleen_subset)
+
+#Filter out B cells that express CD3E, CD3D, CD3G (T), VWF (platelet), C1QB (complement), HBB (erythrocyte) CD14 or CD16 (monocyte) 
+#The genes from the spleen datasets are not filtering out correctly, so we manually subset the cells
+counts <- combined_spleen[["RNA"]]@data
+counts <- counts[rownames(counts) %in% c("CD3D", "CD3E", "CD3G", "VWF", "HBB", "C1QB", "CD14", "FCGR3A"),]
+counts <- counts[,colSums(counts) == 0]
+cells.sub <- colnames(counts)
+
+combined_spleen_subset <- subset(combined_spleen_subset, cells = cells.sub)
+
+dim(combined_spleen_subset)
+```
+
+```{r Reclustering}
+#Re-do the previous analysis
+DefaultAssay(combined_spleen_subset) <- "integrated"
+
+all.genes <- rownames(combined_spleen_subset)
+combined_spleen_subset <- ScaleData(combined_spleen_subset, features = all.genes, verbose = FALSE)
+combined_spleen_subset <- ScaleData(combined_spleen_subset, features = rownames(combined_spleen_subset[["CITE"]]), assay = "CITE", verbose = FALSE)
+
+combined_spleen_subset <- RunICA(combined_spleen_subset, features = VariableFeatures(object = combined_spleen_subset), verbose = FALSE)
+
+combined_spleen_subset <- RunUMAP(combined_spleen_subset, reduction =  "ica", dims = 1:40)
+
+combined_spleen_subset <- FindNeighbors(combined_spleen_subset, reduction = "ica", dims = 1:40)
+
+combined_spleen_subset <- FindClusters(combined_spleen_subset, resolution =  seq(from = 0.1, to = 0.9, by = 0.1), algorithm = 3)
+clust_seurat <- combined_spleen_subset@meta.data %>% dplyr::select(dplyr::contains("integrated_snn_res."))
+clustree(clust_seurat, prefix="integrated_snn_res.")
+
+
+combined_spleen_subset <- FindClusters(combined_spleen_subset, resolution = 0.4, algorithm = 3) 
+```
+
+```{r UMAP visualisation}
+#UMAPping
+n <-length(levels(combined_spleen_subset))
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+cols = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+pie(rep(1,n), col=sample(cols, n))
+clust_cols <- cols[1:n]
+phase_cols <- c("peachpuff", "blue2", "orange3")
+Id_cols <- c('green','red')
+dis_cols <- c('chartreuse1','orange3', 'firebrick','blue2')
+annot_cols <- cols[41:71]
+annot_cols.2 <- cols[41:90]
+
+umap <- DimPlot(combined_spleen_subset, reduction = 'umap', label = TRUE, repel = TRUE, label.size = 4, cols = annot_cols, raster = F) + NoLegend()
+umap_ident <- DimPlot(combined_spleen_subset, reduction = 'umap', label = F, repel = TRUE,  group.by = "orig.ident", raster = F, cols = clust_cols)
+umap_condition <- DimPlot(combined_spleen_subset, reduction = 'umap', label = F, repel = TRUE, group.by = "condition", raster = F)
+umap_tissue <- DimPlot(combined_spleen_subset, reduction = 'umap', label = F, repel = TRUE, group.by = "tissue", raster = F)
+
+combined_spleen_subset@meta.data$antigen[is.na(combined_spleen_subset@meta.data$antigen)] <- "NA"
+umap_antigen <- DimPlot(combined_spleen_subset, reduction = 'umap', label = FALSE, repel = TRUE, label.size = 2.5, pt.size = 1, group.by = "antigen", 
+                        order = c("RF,Ro60,Ro52,La", "RF,Ro60,La", "RF,Ro60","Ro60,Ro52,La", "Ro60,Ro52","Ro60,La","Ro52,La","La","Ro60","Ro52","RF","NA"), cols = c("grey","hotpink","purple","darkblue","cyan" ,"green","yellow","orange","red", "darkgreen", "brown", "darkcyan"))
+combined_spleen_subset@meta.data$antigen[combined_spleen_subset@meta.data$antigen == "NA"] <- NA
+
+combined_spleen_subset@meta.data$group[is.na(combined_spleen_subset@meta.data$group)] <- "NA"
+umap_group <- DimPlot(combined_spleen_subset, reduction = 'umap', label = FALSE, repel = TRUE, label.size = 2.5, pt.size = 1, group.by = "group", order = c("RF", "ANA", "NA"), cols = c("grey",  "red", "blue"))
+combined_spleen_subset@meta.data$group[combined_spleen_subset@meta.data$group == "NA"] <- NA
+
+
+DefaultAssay(combined_spleen_subset) <- "RNA"
+features_rna <- FeaturePlot(combined_spleen_subset, raster = F, features = c("rna_CD3D", "rna_CD4", "rna_CD8A", "rna_CD19", "rna_NCAM1", "rna_ITGAX", "rna_CD14", "rna_CD38","rna_CD79B"), reduction = "umap", cols = c("lightgrey", "darkblue"), order = T) + NoLegend()
+features_rna.2 <- FeaturePlot(combined_spleen_subset, raster = F, features = c("rna_CD83", "rna_THY1", "rna_CD19", "rna_MZB1", "rna_CD79A", "rna_BCL6", "rna_CD27", "rna_IGHM", "rna_IGHG1"), reduction = "umap", cols = c("lightgrey", "darkblue"), order = T) + NoLegend()
+plot <- FeaturePlot(combined_spleen_subset, features = c("rna_CXCR5", "CD27", "IGHD", "BCL6", "MKI67", "AICDA", "LMO2", "CXCR4", "CCR7", "CD24", "ITGAX", "IGHM", "IGHG1", "rna_CD79B", "CD19"), order = T, slot = "data")
+DefaultAssay(combined_spleen_subset) <- "CITE"
+features_cite <- FeaturePlot(combined_spleen_subset, raster = F, features = c("Hu.CD3-UCHT1", "Hu.CD4-RPA.T4", "Hu.CD8", "Hu.CD19", "Hu.CD56", "Hu.CD11c"), order = T, reduction = "umap", cols = c("lightgrey", "darkgreen"), slot = "data")
+DefaultAssay(combined_spleen_subset) <- "integrated"
+
+umap
+umap_ident
+umap_tissue
+umap_condition
+umap_group
+features_rna
+features_rna.2
+features_cite
+plot
+```
+
+```{r Find FCRL4 cells}
+#Where are the FCRL4+ cells?
+DimPlot(combined_spleen_subset, reduction = "umap", label = F, size = 1, pt.size = 1, group.by = "annotation", cols = annot_cols, repel = T)
+```
+
+```{r Azimuth}
+#Azimuth
+DefaultAssay(combined_spleen_subset) <- "RNA"
+combined_spleen_subset <- RunAzimuth(combined_spleen_subset, reference = "tonsilref")
+DefaultAssay(combined_spleen_subset) <- "integrated"
+
+random_col1 <- distinctColorPalette(k=length(unique(combined_spleen_subset@meta.data$predicted.celltype.l1)))
+random_col2 <- distinctColorPalette(k=length(unique(combined_spleen_subset@meta.data$predicted.celltype.l2)))
+
+prediction_umap.l1 <- DimPlot(combined_spleen_subset, reduction = "umap", label = F, size = 1, pt.size = 1, group.by = "predicted.celltype.l1", cols = random_col1, repel = T)
+prediction_umap.l2 <- DimPlot(combined_spleen_subset, reduction = "umap", label = T, size = 1, pt.size = 1, group.by = "predicted.celltype.l2", repel = T, cols = random_col2) + NoLegend()
+
+prediction_umap.l1
+prediction_umap.l2
+```
+
+```{r Find DEGs}
+markers <- FindAllMarkers(combined_spleen_subset, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "MAST", slot = "data", assay = "RNA")
+fullpanel <- subset(combined_spleen_subset, donor %in% c("D003", "D004", "D007", "PBMC"))
+
+fullpanel <- ScaleData(fullpanel, features = rownames(fullpanel[["CITE"]]), assay = "CITE", verbose = FALSE)
+
+fullpanel_markers <- FindAllMarkers(fullpanel, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox", slot = "data", assay = "CITE")
+
+markers <- subset(markers, markers$p_val_adj <= 0.05)
+
+markers <- markers[order(markers$cluster , -markers$avg_log2FC),]
+
+top_15_markers_per_cluster<-markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 15, order_by = avg_log2FC)
+
+
+fullpanel_markers <- fullpanel_markers[fullpanel_markers$p_val_adj <= 0.05,]
+
+fullpanel_markers <- fullpanel_markers[order(fullpanel_markers$cluster , -abs(fullpanel_markers$avg_log2FC)),]
+
+top_15_markers_per_cluster.cite <-fullpanel_markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 15, order_by = abs(avg_log2FC))
+
+CITE.df.2 <- CITE.df
+colnames(CITE.df.2) <- c("gene", "protein")
+
+top_15_markers_per_cluster.cite <- left_join(top_15_markers_per_cluster.cite, CITE.df.2, by = "gene")
+```
+
+```{r Annotate the clusters}
+#Annotation
+annotation <-  c("Activated naive", "Resting NBC?", "Germinal centre-like", "Resting NBC", "Marginal zone B", "Activated naive",
+                 "T-cell contact B cells", "Germinal centre lymphoma-like?", "PC", "MBC", "SG MBC", "GC", "SG MBC", "PC")
+
+names(annotation) <- levels(combined_spleen_subset)
+combined_spleen_subset <- RenameIdents(combined_spleen_subset, annotation)
+
+#Add the cluster identity to the metadata
+combined_spleen_subset@meta.data$cell_barcode <- rownames(combined_spleen_subset@meta.data)
+seurat_clusters <- combined_spleen_subset@meta.data[,c("cell_barcode", "seurat_clusters")]
+annotation.df <- as.data.frame(annotation)
+annotation.df$seurat_clusters <- rownames(annotation.df)
+annotation.df <- inner_join(seurat_clusters, annotation.df , by = "seurat_clusters")
+rownames(annotation.df) <- annotation.df$cell_barcode
+annotation.df$cell_barcode <- NULL
+annotation.df$seurat_clusters <- NULL
+colnames(annotation.df) <- c("annotation_integrated")
+combined_spleen_subset <- AddMetaData(combined_spleen_subset, annotation.df)
+
+#annotation
+tissue_bar_plot <- ggplot(combined_spleen_subset@meta.data, aes(x = annotation_integrated,  fill = annotation)) + geom_bar(position = "fill") +
+  coord_flip()  + xlab("cluster") + ylab("fraction") + theme(text=element_text(size = 22)) + guides(fill=guide_legend(title="Tissue")) +scale_fill_manual(values = c(distinctColorPalette(k = length(unique(seurat_combined_subset@meta.data$annotation))+1)))
+```

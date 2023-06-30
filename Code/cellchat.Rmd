@@ -43,8 +43,13 @@ number <- 1
 library(CellChat)
 library(patchwork)
 library(Seurat)
-
+library(SeuratDisk)
 options(stringsAsFactors = FALSE)
+```
+
+```{r Load Seurat objects}
+seurat_combined <- SeuratDisk::LoadH5Seurat("/home/sidneyz/sjogren_data/own_data/seurat_combined.h5Seurat")
+seurat_combined_subset <- SeuratDisk::LoadH5Seurat("/home/sidneyz/sjogren_data/own_data/seurat_combined_subset.h5Seurat")
 ```
 
 ```{r Add cluster annotations}
@@ -142,7 +147,7 @@ if (comparison == "germinal centre"){
   seurat_combined_cellchat <- seurat_combined
   
 #Read in germinal centre annotations from GC reclustering of the full_analysis script
-gc_meta <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/gc_recluster_donorsep.csv")
+gc_meta <- read.csv("/home/sidneyz/sjogren_results/own_data/seurat_v1.4b/gc_recluster_donorsep.csv")
 rownames(gc_meta) <- gc_meta$X
 gc_meta$X <- NULL
 colnames(gc_meta) <- "annotation_gc"
@@ -237,7 +242,7 @@ gg1 <- netAnalysis_signalingRole_scatter(cellchat) #2D plot
 ht1 <- netAnalysis_signalingRole_heatmap(cellchat, pattern = "outgoing", width = 22, height = 20, font.size = 12)
 ht2 <- netAnalysis_signalingRole_heatmap(cellchat, pattern = "incoming", width = 22, height = 20, font.size = 12)
 
-png(file="/home/sidneyz/sjogren_results/own_data/combined/cellchat_interaction_heatmap.png", width=1920, height=1100)
+png(file="/home/sidneyz/sjogren_results/figures/cellchat_interaction_heatmap.png", width=1920, height=1100)
 
 ht1 + ht2 #heatmap
 
@@ -273,7 +278,7 @@ netAnalysis_dot(cellchat, pattern = "incoming")
 
 ```{r Save results}
 #Save results
-saveRDS(cellchat, "/home/sidneyz/sjogren_results/own_data/combined/cellchat.RDS")
+saveRDS(cellchat, "/home/sidneyz/sjogren_results/own_data/seurat_v1.4b/cellchat.RDS")
 
 #Return R settings back to normal
 plan("sequential") #shut off paralellisation

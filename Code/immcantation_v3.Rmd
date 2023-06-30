@@ -246,7 +246,7 @@ data_merged <- rbindlist(data_list)
 data_merged$barcode <- paste0(data_merged$ident, "_", gsub("-1", "", data_merged$cell_id)) #make a barcode for each cell from the donor and sequence id
 
 #Read in what the autoreactive cells are
-autoreactive_cells <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/alldonors_mathijs_threshold2_0405_annotated_seuratmeta.csv")
+autoreactive_cells <- read.csv("/home/sidneyz/sjogren_results/own_data/clonotyping/alldonors_mathijs_threshold2_0405_annotated_seuratmeta.csv")
 autoreactive_cells$X <- NULL
 colnames(autoreactive_cells) <- c("barcode","clonotype_new", "reactivity", "antigen")
 autoreactive_cells$antigen[autoreactive_cells$clonotype_new == "5903"] <- "RF" #set D007 clone to RF
@@ -394,9 +394,9 @@ for (i in seq_along(dist_list)){
 }
 
 #save the output
-saveRDS(threshold_list, "/home/sidneyz/sjogren_results/own_data/combined/immcantation_thresholds_withB00.rds")
+saveRDS(threshold_list, "/home/sidneyz/sjogren_results/own_data/immcantation_files/immcantation_thresholds_withB00.rds")
 
-threshold_list <- readRDS("/home/sidneyz/sjogren_results/own_data/combined/immcantation_thresholds_withB00.rds")
+threshold_list <- readRDS("/home/sidneyz/sjogren_results/own_data/immcantation_files/immcantation_thresholds_withB00.rds")
 
 #visually inspect the chosen thresholds
 cowplot::plot_grid(plotlist = plot_list)
@@ -424,8 +424,8 @@ for (i in seq_along(data_list)){
   closeAllConnections()
 }
 
-saveRDS(results_list, "/home/sidneyz/sjogren_results/own_data/combined/immcantation_clonotyping_withB00.rds")
-results_list <- readRDS("/home/sidneyz/sjogren_results/own_data/combined/immcantation_clonotyping_withB00.rds")
+saveRDS(results_list, "/home/sidneyz/sjogren_results/own_data/immcantation_files/immcantation_clonotyping_withB00.rds")
+results_list <- readRDS("/home/sidneyz/sjogren_results/own_data/cimmcantation_files/immcantation_clonotyping_withB00.rds")
 ```
 
 ```{r Align to germline reference and calculate mutation scores, include = FALSE}
@@ -487,17 +487,17 @@ for (i in seq_along(results_list)){
 rm(h,k,l,references, references.info,collapse, baseline, data_h,results)
 
 #Save the result
-saveRDS(baseline_list, "/home/sidneyz/sjogren_results/own_data/combined/baseline_withB00.rds")
-saveRDS(data_h_list, "/home/sidneyz/sjogren_results/own_data/combined/data_h_withB00.rds")
-saveRDS(collapse_list, "/home/sidneyz/sjogren_results/own_data/combined/collapseclones_withB00.rds")
+saveRDS(baseline_list, "/home/sidneyz/sjogren_results/own_data/immcantation_files/baseline_withB00.rds")
+saveRDS(data_h_list, "/home/sidneyz/sjogren_results/own_data/immcantation_files/data_h_withB00.rds")
+saveRDS(collapse_list, "/home/sidneyz/sjogren_results/own_data/immcantation_files/collapseclones_withB00.rds")
 
 ```
 
 ```{r Load in results}
 #If you already have the results generated in the chunk above, you can load them here:
-data_h_list <- readRDS("/home/sidneyz/sjogren_results/own_data/combined/data_h_withB00.rds")
-baseline_list <- readRDS("/home/sidneyz/sjogren_results/own_data/combined/baseline_withB00.rds")
-collapse_list <- readRDS("/home/sidneyz/sjogren_results/own_data/combined/collapseclones_withB00.rds")
+data_h_list <- readRDS("/home/sidneyz/sjogren_results/own_data/immcantation_files/data_h_withB00.rds")
+baseline_list <- readRDS("/home/sidneyz/sjogren_results/own_data/immcantation_files/baseline_withB00.rds")
+collapse_list <- readRDS("/home/sidneyz/sjogren_results/own_data/immcantation_files/collapseclones_withB00.rds")
 ```
 
 ```{r Calculate mutation frequencies}
@@ -1023,13 +1023,13 @@ ANA_tree <- as_ggplot(ANA_tree)
 patch5 <- (RF_tree+ANA_tree)/ighv_plot/selection_plot
 
 
-png(file="/home/sidneyz/sjogren_results/figure_5.png", width=1000, height = 1600)
+png(file="/home/sidneyz/sjogren_results/figures/figure_5.png", width=1000, height = 1600)
 patch5 + plot_annotation(tag_levels = "A") & 
   theme(plot.tag = element_text(size = 22, face = "bold"))
 dev.off()
 
 #Make the supplemental figure that demonstrates the isotypes
-png(file="/home/sidneyz/sjogren_results/supplemental_figure_isotypes.png", width=800, height = 600)
+png(file="/home/sidneyz/sjogren_results/figures/supplemental_figure_isotypes.png", width=800, height = 600)
 isotype_plot
 dev.off()
 

@@ -63,9 +63,9 @@ In this analysis, we integrate the entire seurat object, so also the T cells. Th
 
 ```{r Add B cell labels}
 #Add seurat annotation labels
-annotations_full <- seurat_combined_subset[,c("cell_barcode", "annotation_full")]
-annotations_B <- seurat_combined_subset[,c("cell_barcode", "annotation")]
-annotations.df <- read.csv("/home/sidneyz/sjogren_results/own_data/combined/gc_recluster_donorsep.csv")
+annotations_full <- seurat_combined_subset@meta.data[,c("cell_barcode", "annotation_full")]
+annotations_B <- seurat_combined_subset@meta.data[,c("cell_barcode", "annotation")]
+annotations.df <- read.csv("/home/sidneyz/sjogren_results/own_data/seurat_v1.4b/recluster_analyses/gc_recluster_donorsep.csv")
 rownames(annotations.df) <- annotations.df$X
 annotations.df$X <- NULL
 annotations.df$cell_barcode <- rownames(annotations.df)
@@ -84,7 +84,7 @@ seurat_combined <- AddMetaData(seurat_combined, annotations.df)
 
 ```{r Read tonsil dataset}
 #Integration with tonsil reference dataset
-tonsil <- readRDS("/home/sidneyz/sjogren_data/seurat_references/20220215_tonsil_atlas_cite_seurat_obj.rds")
+tonsil <- readRDS("/home/sidneyz/sjogren_data/tonsil/20220215_tonsil_atlas_cite_seurat_obj.rds")
 #Rename ADT assay to CITE
 tonsil[["CITE"]] <- tonsil[["ADT"]]
 tonsil[["ADT"]] <- NULL
@@ -95,10 +95,10 @@ The next chunk of code should only be run if you are working with the raw count 
 
 ```{r Format germinal centre datasets}
 #From raw matrices
-germinal_3a.cite <- read_table(gzfile("/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/GSM4560816_GC3a_Ab_counts.txt.gz"))
-germinal_3b.cite <- read_table(gzfile("/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/GSM4560817_GC3b_Ab_counts.txt.gz"))
-germinal_3a.gex <- read_table(gzfile("/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/GSM4560814_GC3a_umi.txt.gz"))
-germinal_3b.gex <- read_table(gzfile("/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/GSM4560815_GC3b_umi.txt.gz"))
+germinal_3a.cite <- read_table(gzfile("/home/sidneyz/sjogren_data/germinal_center_data_withcite/GSM4560816_GC3a_Ab_counts.txt.gz"))
+germinal_3b.cite <- read_table(gzfile("/home/sidneyz/sjogren_data/germinal_center_data_withcite/GSM4560817_GC3b_Ab_counts.txt.gz"))
+germinal_3a.gex <- read_table(gzfile("/home/sidneyz/sjogren_data/germinal_center_data_withcite/GSM4560814_GC3a_umi.txt.gz"))
+germinal_3b.gex <- read_table(gzfile("/home/sidneyz/sjogren_data/germinal_center_data_withcite/GSM4560815_GC3b_umi.txt.gz"))
 
 #Convert to proper matrix by only keeping real gene names
 germinal_3a.gex.df <- as.data.frame(germinal_3a.gex)
@@ -140,15 +140,15 @@ germinal_3b.cite <- as.matrix(germinal_3b.cite.df)
 germinal_3b <- list(germinal_3b.gex, germinal_3b.cite)
 names(germinal_3b) <- c("Gene Expression", "Antibody Capture")
 
-saveRDS(germinal_3a, "/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/germinal_3a.RDS")
-saveRDS(germinal_3b, "/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/germinal_3b.RDS")
+saveRDS(germinal_3a, "/home/sidneyz/sjogren_data/germinal_center_data_withcite/germinal_3a.RDS")
+saveRDS(germinal_3b, "/home/sidneyz/sjogren_data/germinal_center_data_withcite/germinal_3b.RDS")
 ```
 
 
 ```{r Create seurat objects from germinal centre datasets}
 #Read in data from processed matrices (code chunk above)
-germinal_3a <- readRDS("/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/germinal_3a.RDS")
-germinal_3b <- readRDS("/home/sidneyz/sjogren_data/charlotte_data/germinal_center_data_withcite/germinal_3b.RDS")
+germinal_3a <- readRDS("/home/sidneyz/sjogren_data/germinal_center_data_withcite/germinal_3a.RDS")
+germinal_3b <- readRDS("/home/sidneyz/sjogren_data/germinal_center_data_withcite/germinal_3b.RDS")
 
 germ_list <- list(germinal_3a, germinal_3b)
 names(germ_list) <- c("3A", "3B")
@@ -552,11 +552,11 @@ top_15_markers_per_cluster.fullpanel <-fullpanel_markers %>%
   group_by(cluster) %>%
   slice_max(n = 15, order_by = abs(avg_log2FC))
 
-write.csv(markers, "/home/sidneyz/sjogren_results/own_data/tonsilintegration_fullobject_lognorm_RNA_markers.csv")
-write.csv(fullpanel_markers, "/home/sidneyz/sjogren_results/own_data/tonsilintegration_fullobject_lognorm_CITE_markers_fullpanel.csv")
+write.csv(markers, "/home/sidneyz/sjogren_results/tonsil/tonsilintegration_fullobject_RNA_markers.csv")
+write.csv(fullpanel_markers, "/home/sidneyz/sjogren_results/tonsil/tonsilintegration_fullobject_CITE_markers_fullpanel.csv")
 
-markers <- read.csv("/home/sidneyz/sjogren_results/own_data/tonsilintegration_fullobject_RNA_markers.csv")
-fullpanel_markers <- read.csv("/home/sidneyz/sjogren_results/own_data/tonsilintegration_fullobject_CITE_markers_fullpanel.csv")
+markers <- read.csv("/home/sidneyz/sjogren_results/tonsil/tonsilintegration_fullobject_RNA_markers.csv")
+fullpanel_markers <- read.csv("/home/sidneyz/sjogren_results/tonsil/tonsilintegration_fullobject_CITE_markers_fullpanel.csv")
 ```
 
 ``` {r Annotate the clusters}
@@ -586,7 +586,7 @@ combined <- AddMetaData(combined, annotation_full.df)
 
 ```{r Save the seurat object}
 #Save object
-saveRDS(combined, "sjogren_results/combined.RDS")
+saveRDS(combined, "/home/sidneyz/sjogren_results/tonsil/combined.RDS")
 ```
 
 ##B cell subsetting
@@ -722,14 +722,14 @@ top_15_markers_per_cluster.cite <-combined_markers.cite %>%
   group_by(cluster) %>%
   slice_max(n = 15, order_by = abs(avg_log2FC))
 
-write.csv(combined_markers, "/home/sidneyz/sjogren_results/tonsilintegration_subset_v1.4b_RNA_markers.csv")
-write.csv(combined_markers.cite, "/home/sidneyz/sjogren_results/tonsilintegration_subset_v1.4b_CITE_markers.csv")
+write.csv(combined_markers, "/home/sidneyz/sjogren_results/tonsil/tonsilintegration_subset_v1.4b_RNA_markers.csv")
+write.csv(combined_markers.cite, "/home/sidneyz/sjogren_results/tonsil/tonsilintegration_subset_v1.4b_CITE_markers.csv")
 ```
 
 ```{r Read in results}
 #Read in the marker genes if found earlier:
-combined_markers <- read.csv("/home/sidneyz/sjogren_results/tonsilintegration_subset_v1.4b_RNA_markers.csv")
-combined_markers.cite <- read.csv("/home/sidneyz/sjogren_results/tonsilintegration_subset_v1.4b_CITE_markers.csv")
+combined_markers <- read.csv("/home/sidneyz/sjogren_results/tonsil/tonsilintegration_subset_v1.4b_RNA_markers.csv")
+combined_markers.cite <- read.csv("/home/sidneyz/sjogren_results/tonsil/tonsilintegration_subset_v1.4b_CITE_markers.csv")
 combined_markers$X <- NULL
 combined_markers.cite$X <- NULL
 ```
@@ -825,7 +825,7 @@ combined_subset@meta.data$annotation <- NULL
 ```{r Plot annotation}
 umap_annotation <- DimPlot(combined_subset, reduction = 'umap', label = TRUE, repel = TRUE, label.size = 4, cols = annot_cols.2, group.by = "annotation_integrated") 
 umap_annotation
-saveRDS(umap_annotation, "/home/sidneyz/sjogren_results/UMAP_tonsil_annotated.RDS")
+saveRDS(umap_annotation, "/home/sidneyz/figures/UMAP_tonsil_annotated.RDS")
 ```
 
 ```{r Trace back germinal centre cells}
@@ -842,7 +842,7 @@ test <- gc@meta.data %>%
 plot_gc <- ggplot(test, aes(x=annotation_gc, y = n, fill = annotation_integrated)) + geom_col(position = "dodge",  colour = "black") + theme_bw() +
   xlab("original GC annotation") + ylab("number of cells") + scale_fill_manual(values = distinctColorPalette(k = length(unique(test$annotation_integrated)))) + theme(panel.grid.major.x = element_blank(),panel.border = element_blank(),  axis.line = element_line(colour = "black"), text = element_text(size = 20))
 
-saveRDS(plot_gc, "/home/sidneyz/sjogren_results/gc_mapping_tonsil.RDS")
+saveRDS(plot_gc, "/home/sidneyz/sjogren_results/figures/gc_mapping_tonsil.RDS")
 ```
 
 ```{r Make a heatmap of DEGs per cluster}
