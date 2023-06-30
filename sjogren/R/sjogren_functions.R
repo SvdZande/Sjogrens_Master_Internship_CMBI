@@ -133,7 +133,7 @@ clonotype <- function(contig, threshold, levenshtein = F){
 
   if (nrow(contig_IGKL_dup) > 0){
     contig_IGH_counterparts <- contig[contig$cell_barcode %fin% contig_IGKL_dup$cell_barcode,]
-    contig_IGH_counterparts <- contig_IGH_counterparts[contig_IGH_counterparts$chain == "IGH"]
+    contig_IGH_counterparts <- contig_IGH_counterparts[contig_IGH_counterparts$chain == "IGH",]
     contig_IGKL_dup <- rbind(contig_IGKL_dup, contig_IGH_counterparts)
     contig <- contig[!(contig$cell_barcode %fin% contig_IGKL_dup$cell_barcode),] #replace the dual IGKL entries with the one with the most reads
     contig <- rbind(contig, contig_IGKL_dup)
