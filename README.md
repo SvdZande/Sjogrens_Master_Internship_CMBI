@@ -13,6 +13,9 @@ singularity pull docker://bioconductor/bioconductor_docker:RELEASE_3_17
 ```
 If you have any questions on Singularity or Docker, or the CMBI in general, the wiki might be of help: https://gitlab.cmbi.umcn.nl/cmbi/general/-/wikis/home
 
+##Data
+Most of the data I used as input for my scripts is present in this GitHub repository. The cellranger filtered_contig_annotations are present for each donor. I also added the autoreactive CDR3 sequences found for each donor in the **Autoreactive_sequences** folder.
+
 ## Scripts
 The version number of each script is indicated in the file name. If, for any reason, you would like to request a previous version of any script mentioned here, and you do not have access to the Radboudumc Octarine cluster, please email me at the email address mentioned at the beginning.
 Most of these packages use functions that I moved to the self-designed __sjogren__ package. This package can be downloaded off of the Octarine cluster or off of this GitHub repository. I will not be further developing this package after completion of the project, but I am happy to answer any questions you may have on the functions that are in it.
@@ -26,6 +29,8 @@ For running the Immcantation analysis framework, I used the _immcantation.Rmd_ s
 For comparisons to healthy tonsil data from public datasets, I used the _tonsil_b_analysis.Rmd_ script.
 
 For cell-cell interaction analyses using cellchat, I used the _cellchat.Rmd_ script.
+
+A script for the comparison of SjS data to spleen data is also included in this folder, however, this script was never used in any outputs, nor is it tested properly.
 
 Hope this was informative!
 
