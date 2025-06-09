@@ -1,7 +1,7 @@
 # A Multimodal Analysis of B Lymphocytes in Sjögren's Syndrome
 This repository contains the full analysis I performed on multimodal datasets from patients with Sjögrens syndrome for my Masters internship (2023).
 The internship was conducted at the department of Molecular BioSciences (formerly known as the CMBI) at the Radboudumc in Nijmegen, the Netherlands.
-For any questions regarding the repository or its contents, you can mail me at sidneyvanderzande@helsinki.fi.
+For any questions regarding the repository or its contents, you can mail me at sidney.vanderzande@helsinki.fi.
 
 This internship was performed under the supervision of prof. dr. Martijn Huijnen and dr. Prashant Singh, in collaboration with the Department of Rheumatology at the Radboudumc.
 A paper published previously by our group, which has some overlap with this project, can be found under the DOI 10.1136/annrheumdis-2021-221604.
